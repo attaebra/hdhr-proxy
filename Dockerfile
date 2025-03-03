@@ -11,7 +11,8 @@ RUN go mod download || true
 # Copy source code
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-COPY pkg/ ./pkg/
+# Only create pkg directory if needed (don't try to copy from empty dir)
+RUN mkdir -p ./pkg/
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o hdhr-proxy ./cmd/hdhr-proxy
