@@ -1,12 +1,12 @@
 # HDHR-AC4-Go
 
-[![Build and Push Docker Image](https://github.com/yourusername/hdhr-ac4-go/actions/workflows/docker-build.yml/badge.svg)](https://github.com/yourusername/hdhr-ac4-go/actions/workflows/docker-build.yml)
-[![Go Tests and Lint](https://github.com/yourusername/hdhr-ac4-go/actions/workflows/go-tests.yml/badge.svg)](https://github.com/yourusername/hdhr-ac4-go/actions/workflows/go-tests.yml)
+[![Build and Push Docker Image](https://github.com/attaebra/hdhr-proxy/actions/workflows/docker-build.yml/badge.svg)](https://github.com/attaebra/hdhr-proxy/actions/workflows/docker-build.yml)
+[![Go Tests and Lint](https://github.com/attaebra/hdhr-proxy/actions/workflows/go-tests.yml/badge.svg)](https://github.com/attaebra/hdhr-proxy/actions/workflows/go-tests.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 A high-performance Go implementation of a proxy for HDHomeRun ATSC 3.0 tuners that converts AC4 audio to EAC3 for compatibility with media players like Plex, Emby, and VLC.
 
-![HDHomeRun with Plex](https://hdhomerun.com/images/CONNECT_4K_small.png)
+![HDHomeRun FLEX 4K](https://www.silicondust.com/wordpress/wp-content/uploads/2021/06/HDHR-FLEX-4K-1000x563.jpg)
 
 ## Overview
 
