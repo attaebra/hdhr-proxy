@@ -3,18 +3,18 @@ FROM golang:1.24 AS builder
 
 WORKDIR /app
 
-# Copy go.mod first to leverage Docker cache
-COPY go.mod ./
-# Conditionally copy go.sum if it exists
-COPY go.sum* ./
-# Initialize go.sum if it doesn't exist
-RUN touch go.sum && go mod download
+# Copy the Go modules manifests
+COPY go.mod go.sum ./
+# Download dependencies (if go.sum exists)
+RUN go mod download || true
 
 # Copy source code
-COPY . .
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY pkg/ ./pkg/
 
-# Build the Go application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o hdhr-proxy ./cmd/hdhr-proxy
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o hdhr-proxy ./cmd/hdhr-proxy
 
 # Final stage
 FROM debian:bullseye-slim
@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     binutils \
     xz-utils \
+    libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -41,5 +42,6 @@ EXPOSE 5004
 # Set environment variable defaults
 ENV HDHR_IP=""
 ENV LINK=""
+ENV LOG_LEVEL="info"
 
-CMD ["/bin/bash", "/app/run.sh"] 
+CMD ["/bin/bash", "/app/run.sh"]

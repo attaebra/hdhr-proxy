@@ -1,3 +1,3 @@
-module github.com/yourusername/hdhr-ac4-go
+module github.com/attaebra/hdhr-proxy
 
 go 1.24.0

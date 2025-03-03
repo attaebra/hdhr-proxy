@@ -37,4 +37,4 @@ mv opt/emby-server/extra/lib/libOpenCL.so.* /usr/lib/ || true
 
 # Start the server
 echo "Starting hdhr-proxy..."
-/app/hdhr-proxy -hdhr-ip $HDHR_IP 
+/app/hdhr-proxy -hdhr-ip $HDHR_IP -log-level $LOG_LEVEL 
