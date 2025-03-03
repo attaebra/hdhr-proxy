@@ -1,0 +1,26 @@
+linters:
+  enable:
+    - goimports      # Checks for import formatting
+    - govet          # Reports suspicious constructs
+    - staticcheck    # Go static analysis tool
+    - errcheck       # Checks for unchecked errors
+    - gosimple       # Suggests code simplifications
+    - ineffassign    # Detects unused variable assignments
+    - unused         # Checks for unused constants, variables, functions and types
+    - misspell       # Checks for commonly misspelled English words
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck   # Don't require error checks in tests
+
+run:
+  deadline: 5m
+  tests: true
+  skip-dirs:
+    - vendor/
+    - node_modules/
+
+output:
+  format: colored-line-number 
