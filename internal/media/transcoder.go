@@ -174,27 +174,27 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		"-nostats",
 		"-hide_banner",
 		"-loglevel", "warning",
-		"-fflags", "+genpts+nobuffer+flush_packets",  // Combination of helpful flags
-		"-flags", "low_delay",                        // Low delay mode
-		"-avioflags", "direct",                       // Direct I/O operations
+		"-fflags", "+genpts+nobuffer+flush_packets", // Combination of helpful flags
+		"-flags", "low_delay", // Low delay mode
+		"-avioflags", "direct", // Direct I/O operations
 		"-i", "pipe:",
 		"-map", "0:v",
 		"-map", "0:a",
 		"-c:v", "copy",
 		"-ar", "48000",
 		"-c:a", "eac3",
-		"-b:a", "384k",           // Set audio bitrate explicitly
-		"-bufsize", "8192k",      // Add buffer size for smoother output
-		"-maxrate", "10000k",     // Set max rate for buffer calculation
-		"-flush_packets", "1",    // Force ffmpeg to flush packets immediately
-		"-max_delay", "500000",   // 0.5 seconds max delay (in microseconds)
+		"-b:a", "384k", // Set audio bitrate explicitly
+		"-bufsize", "8192k", // Add buffer size for smoother output
+		"-maxrate", "10000k", // Set max rate for buffer calculation
+		"-flush_packets", "1", // Force ffmpeg to flush packets immediately
+		"-max_delay", "500000", // 0.5 seconds max delay (in microseconds)
 		"-max_interleave_delta", "0", // Don't delay for interleaving
 		"-c:d", "copy",
 		"-f", "mpegts",
-		"-muxdelay", "0",          // Minimize muxing delay
-		"-muxpreload", "0",        // Minimize muxing preload delay
-		"-packetsize", "188",      // Use standard MPEG-TS packet size
-		"-pat_period", "0.1",      // More frequent Program Association Table
+		"-muxdelay", "0", // Minimize muxing delay
+		"-muxpreload", "0", // Minimize muxing preload delay
+		"-packetsize", "188", // Use standard MPEG-TS packet size
+		"-pat_period", "0.1", // More frequent Program Association Table
 		"-",
 	)
 	t.mutex.Unlock()
@@ -345,7 +345,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 					break
 				}
 			}
-			
+
 			// Wait for flush goroutine to complete
 			<-innerDone
 		}()
