@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -179,8 +180,13 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		"-c:v", "copy",
 		"-ar", "48000",
 		"-c:a", "eac3",
+		"-b:a", "384k", // Set audio bitrate explicitly
+		"-bufsize", "8192k", // Add buffer size for smoother output
+		"-maxrate", "10000k", // Set max rate for buffer calculation
 		"-c:d", "copy",
 		"-f", "mpegts",
+		"-muxdelay", "0", // Minimize muxing delay
+		"-muxpreload", "0", // Minimize muxing preload delay
 		"-",
 	)
 	t.mutex.Unlock()
@@ -255,7 +261,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
 		defer stdin.Close()
 
-		buffer := make([]byte, 64*1024) // Use a 64KB buffer
+		buffer := make([]byte, 256*1024) // Increase to 256KB buffer for HDHomeRun reads
 		var totalBytes int64
 
 		// Periodically log progress
@@ -328,16 +334,112 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	// Set appropriate headers for the response
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("X-Transcoded-By", "hdhr-proxy")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Transfer-Encoding", "chunked")
 
-	// Use a buffer for better performance
-	buffer := make([]byte, 128*1024) // 128KB buffer
+	// Prepare a buffered writer for better streaming performance
+	bufWriter := bufio.NewWriterSize(w, 512*1024) // 512KB buffer for output
+	defer bufWriter.Flush()
+
+	// Use a larger buffer for better performance
+	buffer := make([]byte, 512*1024) // Increase to 512KB buffer for reading from ffmpeg
 	var written int64
+
+	// Create a pre-buffer to ensure smooth playback start
+	preBufferSize := 2 * 1024 * 1024 // 2MB pre-buffer
+	preBuffer := make([]byte, 0, preBufferSize)
+	isPreBuffering := true
+
+	logger.Debug("Starting pre-buffering %d bytes of data for smooth playback...", preBufferSize)
+
+	// Add a timeout to pre-buffering to avoid waiting too long
+	preBufferTimeout := time.NewTimer(3 * time.Second)
+	defer preBufferTimeout.Stop()
+
+	// Pre-buffer some data before starting to stream
+	preBufferDone := make(chan struct{})
+
+	go func() {
+		for isPreBuffering {
+			nr, er := stdout.Read(buffer)
+			if nr > 0 {
+				// Add to pre-buffer
+				if len(preBuffer) < preBufferSize {
+					spaceLeft := preBufferSize - len(preBuffer)
+					bytesToAdd := nr
+					if bytesToAdd > spaceLeft {
+						bytesToAdd = spaceLeft
+					}
+					preBuffer = append(preBuffer, buffer[0:bytesToAdd]...)
+
+					// Check if we've filled the pre-buffer
+					if len(preBuffer) >= preBufferSize {
+						logger.Debug("Pre-buffering complete, starting streaming with %d bytes", len(preBuffer))
+						close(preBufferDone)
+						return
+					}
+				}
+			}
+
+			if er != nil {
+				if er == io.EOF {
+					// If we hit EOF during pre-buffering, just send what we have
+					logger.Debug("EOF during pre-buffering, sending %d buffered bytes", len(preBuffer))
+					close(preBufferDone)
+					return
+				} else {
+					logger.Error("Error during pre-buffering: %v", er)
+					close(preBufferDone)
+					return
+				}
+			}
+		}
+	}()
+
+	// Wait for pre-buffer or timeout
+	select {
+	case <-preBufferDone:
+		// Pre-buffer is ready
+	case <-preBufferTimeout.C:
+		logger.Debug("Pre-buffer timeout, starting with %d bytes", len(preBuffer))
+	}
+
+	// Write the pre-buffer to the client
+	if len(preBuffer) > 0 {
+		nw, ew := bufWriter.Write(preBuffer)
+		if ew != nil {
+			logger.Error("Error writing pre-buffer to client: %v", ew)
+			return fmt.Errorf("error writing pre-buffer: %w", ew)
+		}
+		written += int64(nw)
+		bufWriter.Flush() // Ensure the pre-buffer is sent immediately
+	}
+
+	// We're no longer pre-buffering
+	isPreBuffering = false
+
+	// Add a flush ticker to ensure data is sent regularly
+	flushTicker := time.NewTicker(100 * time.Millisecond)
+	defer flushTicker.Stop()
+
+	// Start flush goroutine
+	go func() {
+		for {
+			select {
+			case <-flushTicker.C:
+				bufWriter.Flush()
+			case <-t.ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Copy in chunks and count bytes
 	for {
 		nr, er := stdout.Read(buffer)
 		if nr > 0 {
-			nw, ew := w.Write(buffer[0:nr])
+			nw, ew := bufWriter.Write(buffer[0:nr])
 			if nw < 0 || nr < nw {
 				nw = 0
 			}
