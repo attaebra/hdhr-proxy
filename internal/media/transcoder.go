@@ -174,19 +174,27 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		"-nostats",
 		"-hide_banner",
 		"-loglevel", "warning",
+		"-fflags", "+genpts+nobuffer+flush_packets",  // Combination of helpful flags
+		"-flags", "low_delay",                        // Low delay mode
+		"-avioflags", "direct",                       // Direct I/O operations
 		"-i", "pipe:",
 		"-map", "0:v",
 		"-map", "0:a",
 		"-c:v", "copy",
 		"-ar", "48000",
 		"-c:a", "eac3",
-		"-b:a", "384k", // Set audio bitrate explicitly
-		"-bufsize", "8192k", // Add buffer size for smoother output
-		"-maxrate", "10000k", // Set max rate for buffer calculation
+		"-b:a", "384k",           // Set audio bitrate explicitly
+		"-bufsize", "8192k",      // Add buffer size for smoother output
+		"-maxrate", "10000k",     // Set max rate for buffer calculation
+		"-flush_packets", "1",    // Force ffmpeg to flush packets immediately
+		"-max_delay", "500000",   // 0.5 seconds max delay (in microseconds)
+		"-max_interleave_delta", "0", // Don't delay for interleaving
 		"-c:d", "copy",
 		"-f", "mpegts",
-		"-muxdelay", "0", // Minimize muxing delay
-		"-muxpreload", "0", // Minimize muxing preload delay
+		"-muxdelay", "0",          // Minimize muxing delay
+		"-muxpreload", "0",        // Minimize muxing preload delay
+		"-packetsize", "188",      // Use standard MPEG-TS packet size
+		"-pat_period", "0.1",      // More frequent Program Association Table
 		"-",
 	)
 	t.mutex.Unlock()
@@ -274,14 +282,43 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		go func() {
 			defer close(done)
 
+			// Create a new buffer writer for stdin to batch writes
+			stdinWriter := bufio.NewWriterSize(stdin, 512*1024)
+			defer stdinWriter.Flush()
+
+			// Add a flush ticker to ensure data is sent to ffmpeg regularly
+			flushInputTicker := time.NewTicker(50 * time.Millisecond)
+			defer flushInputTicker.Stop()
+
+			// Start flush goroutine for input
+			innerDone := make(chan struct{})
+			go func() {
+				defer close(innerDone)
+				for {
+					select {
+					case <-flushInputTicker.C:
+						stdinWriter.Flush()
+					case <-t.ctx.Done():
+						return
+					case <-done:
+						return
+					}
+				}
+			}()
+
 			for {
 				nr, er := resp.Body.Read(buffer)
 				if nr > 0 {
-					nw, ew := stdin.Write(buffer[0:nr])
+					nw, ew := stdinWriter.Write(buffer[0:nr])
 					if nw < 0 || nr < nw {
 						nw = 0
 					}
 					totalBytes += int64(nw)
+
+					// Force flush for small data amounts to get ffmpeg started quickly
+					if totalBytes < 1024*1024 { // First 1MB
+						stdinWriter.Flush()
+					}
 
 					if ew != nil {
 						if t.ctx.Err() == nil { // Only log if not cancelled
@@ -308,6 +345,9 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 					break
 				}
 			}
+			
+			// Wait for flush goroutine to complete
+			<-innerDone
 		}()
 
 		// Monitor and log progress
@@ -347,14 +387,14 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	var written int64
 
 	// Create a pre-buffer to ensure smooth playback start
-	preBufferSize := 2 * 1024 * 1024 // 2MB pre-buffer
+	preBufferSize := 512 * 1024 // Reduce to 512KB pre-buffer (was 2MB)
 	preBuffer := make([]byte, 0, preBufferSize)
 	isPreBuffering := true
 
 	logger.Debug("Starting pre-buffering %d bytes of data for smooth playback...", preBufferSize)
 
 	// Add a timeout to pre-buffering to avoid waiting too long
-	preBufferTimeout := time.NewTimer(3 * time.Second)
+	preBufferTimeout := time.NewTimer(1 * time.Second) // Reduced from 3 seconds to 1 second
 	defer preBufferTimeout.Stop()
 
 	// Pre-buffer some data before starting to stream
@@ -405,7 +445,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		logger.Debug("Pre-buffer timeout, starting with %d bytes", len(preBuffer))
 	}
 
-	// Write the pre-buffer to the client
+	// Even if pre-buffer is empty, continue with streaming
 	if len(preBuffer) > 0 {
 		nw, ew := bufWriter.Write(preBuffer)
 		if ew != nil {
@@ -435,6 +475,21 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		}
 	}()
 
+	// Log progress periodically
+	progressTicker := time.NewTicker(5 * time.Second)
+	defer progressTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-progressTicker.C:
+				logger.Debug("Channel %s: Written %d bytes to client so far", channel, written)
+			case <-t.ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Copy in chunks and count bytes
 	for {
 		nr, er := stdout.Read(buffer)
@@ -444,6 +499,11 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 				nw = 0
 			}
 			written += int64(nw)
+
+			// Flush more frequently during initial seconds to ensure data flows
+			if written < 1024*1024 { // First 1MB
+				bufWriter.Flush()
+			}
 
 			if ew != nil {
 				if t.ctx.Err() == nil { // Only log if not cancelled
