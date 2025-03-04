@@ -17,41 +17,41 @@ import (
 
 // Transcoder manages the FFmpeg process for transcoding AC4 to EAC3
 type Transcoder struct {
-	FFmpegPath    string
-	InputURL      string
-	ctx           context.Context
-	cancel        context.CancelFunc
-	cmd           *exec.Cmd
-	mutex         sync.Mutex
-	activeStreams map[string]time.Time // Track active streams by channel ID
-	RequestTimeout time.Duration      // HTTP request timeout
+	FFmpegPath     string
+	InputURL       string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	cmd            *exec.Cmd
+	mutex          sync.Mutex
+	activeStreams  map[string]time.Time // Track active streams by channel ID
+	RequestTimeout time.Duration        // HTTP request timeout
 }
 
 // NewTranscoder creates a new transcoder instance
 func NewTranscoder(ffmpegPath, hdhrIP string) *Transcoder {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Default to no timeout (0)
 	var requestTimeout time.Duration
-	
+
 	// Only set a timeout if explicitly configured
 	if timeoutStr := os.Getenv("REQUEST_TIMEOUT"); timeoutStr != "" {
 		if parsedTimeout, err := time.ParseDuration(timeoutStr); err == nil {
 			requestTimeout = parsedTimeout
 			logger.Debug("Using custom request timeout: %s", requestTimeout)
 		} else {
-			logger.Warning("Invalid REQUEST_TIMEOUT format, using no timeout")
+			logger.Warn("Invalid REQUEST_TIMEOUT format, using no timeout")
 		}
 	} else {
 		logger.Debug("No timeout configured, streaming will continue indefinitely")
 	}
-	
+
 	return &Transcoder{
-		FFmpegPath:    ffmpegPath,
-		InputURL:      fmt.Sprintf("http://%s:5004", hdhrIP),
-		ctx:           ctx,
-		cancel:        cancel,
-		activeStreams: make(map[string]time.Time),
+		FFmpegPath:     ffmpegPath,
+		InputURL:       fmt.Sprintf("http://%s:5004", hdhrIP),
+		ctx:            ctx,
+		cancel:         cancel,
+		activeStreams:  make(map[string]time.Time),
 		RequestTimeout: requestTimeout,
 	}
 }
@@ -121,7 +121,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 
 	// Create an HTTP client to fetch the stream
 	client := &http.Client{}
-	
+
 	// Only set timeout if greater than 0
 	if t.RequestTimeout > 0 {
 		client.Timeout = t.RequestTimeout
