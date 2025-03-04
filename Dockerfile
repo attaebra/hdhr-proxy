@@ -8,12 +8,11 @@ COPY go.mod go.sum ./
 # Download dependencies (if go.sum exists)
 RUN go mod download || true
 
-# Create all required directories
+# Create directories first
 RUN mkdir -p ./cmd/hdhr-proxy ./internal ./pkg
 
-# Copy source code - only copy what exists
-COPY cmd/hdhr-proxy/main.go ./cmd/hdhr-proxy/
-COPY internal/ ./internal/
+# Copy source code - check directory structure first
+COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -o hdhr-proxy ./cmd/hdhr-proxy
