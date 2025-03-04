@@ -61,34 +61,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
-      # Ensure package is public (only runs on push to main, not PR)
-      - name: Make package public
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "Making package public..."
-          
-          # Get package name from repository
-          PACKAGE_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2)
-          echo "Package name: $PACKAGE_NAME"
-          
-          # Ensure GH CLI is installed
-          if ! command -v gh &> /dev/null; then
-            echo "Installing GitHub CLI..."
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update
-            sudo apt install gh
-          fi
-          
-          # Authenticate with GitHub CLI
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-          
-          # Try to make package public (may not work in all cases due to permission issues)
-          echo "Setting package to public..."
-          gh api --method PATCH "/user/packages/container/$PACKAGE_NAME/visibility" -f "visibility=public" || echo "Failed to set package visibility via user endpoint"
-          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME/visibility" -f "visibility=public" || echo "Failed to set package visibility via org endpoint"
-          
-          echo "Package visibility should now be public"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
