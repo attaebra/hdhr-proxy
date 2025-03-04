@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime/debug"
 	"strings"
@@ -23,20 +24,35 @@ type Transcoder struct {
 	cmd           *exec.Cmd
 	mutex         sync.Mutex
 	activeStreams map[string]time.Time // Track active streams by channel ID
+	RequestTimeout time.Duration      // HTTP request timeout
 }
 
 // NewTranscoder creates a new transcoder instance
 func NewTranscoder(ffmpegPath, hdhrIP string) *Transcoder {
-	if ffmpegPath == "" {
-		ffmpegPath = "/usr/bin/ffmpeg" // Default path
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Default to no timeout (0)
+	var requestTimeout time.Duration
+	
+	// Only set a timeout if explicitly configured
+	if timeoutStr := os.Getenv("REQUEST_TIMEOUT"); timeoutStr != "" {
+		if parsedTimeout, err := time.ParseDuration(timeoutStr); err == nil {
+			requestTimeout = parsedTimeout
+			logger.Debug("Using custom request timeout: %s", requestTimeout)
+		} else {
+			logger.Warning("Invalid REQUEST_TIMEOUT format, using no timeout")
+		}
+	} else {
+		logger.Debug("No timeout configured, streaming will continue indefinitely")
 	}
-
-	logger.Info("Creating new transcoder with ffmpeg path: %s and HDHomeRun IP: %s", ffmpegPath, hdhrIP)
-
+	
 	return &Transcoder{
 		FFmpegPath:    ffmpegPath,
 		InputURL:      fmt.Sprintf("http://%s:5004", hdhrIP),
+		ctx:           ctx,
+		cancel:        cancel,
 		activeStreams: make(map[string]time.Time),
+		RequestTimeout: requestTimeout,
 	}
 }
 
@@ -104,8 +120,14 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	t.mutex.Unlock()
 
 	// Create an HTTP client to fetch the stream
-	client := &http.Client{
-		Timeout: 10 * time.Second, // Set connection timeout
+	client := &http.Client{}
+	
+	// Only set timeout if greater than 0
+	if t.RequestTimeout > 0 {
+		client.Timeout = t.RequestTimeout
+		logger.Debug("Using HTTP client timeout: %s", t.RequestTimeout)
+	} else {
+		logger.Debug("No timeout set for HTTP client, stream will continue until closed")
 	}
 
 	// Create the request with context
