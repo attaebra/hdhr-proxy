@@ -32,7 +32,7 @@ ATSC 3.0 (NextGen TV) broadcasts often use AC4 audio encoding, which isn't compa
 The codebase is organized as follows:
 
 ```
-hdhr-ac4/
+hdhr-proxy/
 ├── cmd/                 # Application entry points
 │   └── hdhr-proxy/      # Main application
 ├── internal/            # Private application packages
@@ -55,10 +55,10 @@ hdhr-ac4/
 ### Using Docker
 
 ```bash
-docker run -p 5003:80 -p 5004:5004 -e HDHR_IP=192.168.0.123 ghcr.io/attaebra/hdhr-ac4-go:latest
+docker run -p 5003:80 -p 5004:5004 -e HDHR_IP=192.168.1.101 ghcr.io/attaebra/hdhr-proxy:latest
 ```
 
-Replace `192.168.0.123` with the IP address of your HDHomeRun device.
+Replace `192.168.1.101` with the IP address of your HDHomeRun device.
 
 ### Environment Variables
 
@@ -77,7 +77,7 @@ Replace `192.168.0.123` with the IP address of your HDHomeRun device.
 
 1. In Plex, go to Settings → Live TV → Set up Live TV
 2. Add a new tuner device
-3. Enter the container's IP and port (e.g., `192.168.0.234:5003`)
+3. Enter the container's IP and port (e.g., `192.168.1.100:5003`)
 4. Follow the on-screen instructions to complete setup
 
 ### VLC
@@ -97,8 +97,8 @@ Replace `192.168.0.123` with the IP address of your HDHomeRun device.
 
 1. Clone the repository
    ```bash
-   git clone https://github.com/yourusername/hdhr-ac4-go.git
-   cd hdhr-ac4-go
+   git clone https://github.com/attaebra/hdhr-proxy.git
+   cd hdhr-proxy
    ```
 
 2. Run the tests
@@ -161,7 +161,7 @@ For manual testing with the HDHomeRun:
 
 1. Start the application with your HDHomeRun IP:
    ```bash
-   LOG_LEVEL=debug ./hdhr-proxy -hdhr-ip 192.168.0.123
+   LOG_LEVEL=debug ./hdhr-proxy -hdhr-ip 192.168.1.101
    ```
 
 2. Test the API endpoints:
@@ -225,7 +225,7 @@ You can view the linting configuration in `.golangci.yml` at the root of the rep
 ### Docker Build
 
 ```bash
-docker build -t hdhr-ac4-go .
+docker build -t hdhr-proxy .
 ```
 
 ## Troubleshooting
@@ -247,7 +247,7 @@ docker logs hdhr-proxy
 Set the `LOG_LEVEL` environment variable to `debug` for more detailed logs:
 
 ```bash
-docker run -e HDHR_IP=192.168.0.123 -e LOG_LEVEL=debug -p 5003:80 -p 5004:5004 hdhr-proxy:latest
+docker run -e HDHR_IP=192.168.1.101 -e LOG_LEVEL=debug -p 5003:80 -p 5004:5004 ghcr.io/attaebra/hdhr-proxy:latest
 ```
 
 ## Contributing
