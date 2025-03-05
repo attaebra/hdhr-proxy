@@ -125,7 +125,9 @@ go test ./...
 Run tests with verbose output:
 ```bash
 go test -v ./...
-```Run tests with coverage report:
+```
+
+Run tests with coverage report:
 ```bash
 go test -cover ./...
 ```
