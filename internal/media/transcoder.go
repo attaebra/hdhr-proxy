@@ -84,41 +84,9 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		logger.Info("Transcoding session for channel %s ended after %.2f seconds", channel, duration)
 	}()
 
-	t.mutex.Lock()
-
 	// Create a cancelable context
-	t.ctx, t.cancel = context.WithCancel(context.Background())
-
-	// Create a cleanup function that will be called on any exit path
-	cleanup := func() {
-		logger.Debug("Cleaning up transcoding resources for channel %s...", channel)
-		if t.cancel != nil {
-			t.cancel()
-		}
-
-		if t.cmd != nil && t.cmd.Process != nil {
-			pid := t.cmd.Process.Pid
-			logger.Debug("Killing ffmpeg process with PID: %d", pid)
-			killErr := t.cmd.Process.Kill()
-			if killErr != nil {
-				logger.Error("Error killing ffmpeg process (PID: %d): %v", pid, killErr)
-			}
-		}
-
-		// Wait for process to exit to avoid zombie processes
-		if t.cmd != nil {
-			waitErr := t.cmd.Wait()
-			if waitErr != nil && !strings.Contains(waitErr.Error(), "already released") &&
-				!strings.Contains(waitErr.Error(), "already finished") {
-				logger.Debug("Wait error for ffmpeg process: %v", waitErr)
-			}
-		}
-		logger.Debug("Cleanup completed for channel %s", channel)
-	}
-
-	// Make sure we clean up on return
-	defer cleanup()
-	t.mutex.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Create an HTTP client to fetch the stream
 	client := &http.Client{}
@@ -134,7 +102,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	// Create the request with context
 	sourceURL := fmt.Sprintf("%s/auto/v%s", t.InputURL, channel)
 	logger.Debug("Connecting to source URL: %s", sourceURL)
-	req, err := http.NewRequestWithContext(t.ctx, "GET", sourceURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", sourceURL, nil)
 	if err != nil {
 		logger.Error("Failed to create HTTP request: %v", err)
 		return fmt.Errorf("failed to create HTTP request: %w", err)
@@ -151,7 +119,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		logger.Error("Failed to fetch stream: %v", err)
 		return fmt.Errorf("failed to fetch stream: %w", err)
 	}
-	logger.Debug("Connected to HDHomeRun in %.2f ms", time.Since(connStart).Milliseconds())
+	logger.Debug("Connected to HDHomeRun in %d ms", time.Since(connStart).Milliseconds())
 
 	defer resp.Body.Close()
 
@@ -166,53 +134,38 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	logger.Debug("Response content type: %s", resp.Header.Get("Content-Type"))
 	logger.Debug("Response headers: %v", resp.Header)
 
-	// Set up ffmpeg command
+	// Set up ffmpeg command with minimal options, matching the JavaScript implementation
 	logger.Debug("Setting up ffmpeg command with path: %s", t.FFmpegPath)
 
-	t.mutex.Lock()
-	t.cmd = exec.CommandContext(t.ctx, t.FFmpegPath,
+	cmd := exec.CommandContext(ctx, t.FFmpegPath,
 		"-nostats",
 		"-hide_banner",
 		"-loglevel", "warning",
-		"-fflags", "+genpts+nobuffer+flush_packets", // Combination of helpful flags
-		"-flags", "low_delay", // Low delay mode
-		"-avioflags", "direct", // Direct I/O operations
 		"-i", "pipe:",
 		"-map", "0:v",
 		"-map", "0:a",
 		"-c:v", "copy",
 		"-ar", "48000",
 		"-c:a", "eac3",
-		"-b:a", "384k", // Set audio bitrate explicitly
-		"-bufsize", "8192k", // Add buffer size for smoother output
-		"-maxrate", "10000k", // Set max rate for buffer calculation
-		"-flush_packets", "1", // Force ffmpeg to flush packets immediately
-		"-max_delay", "500000", // 0.5 seconds max delay (in microseconds)
-		"-max_interleave_delta", "0", // Don't delay for interleaving
 		"-c:d", "copy",
 		"-f", "mpegts",
-		"-muxdelay", "0", // Minimize muxing delay
-		"-muxpreload", "0", // Minimize muxing preload delay
-		"-packetsize", "188", // Use standard MPEG-TS packet size
-		"-pat_period", "0.1", // More frequent Program Association Table
 		"-",
 	)
-	t.mutex.Unlock()
 
 	// Get pipes for stdin and stdout
-	stdin, err := t.cmd.StdinPipe()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		logger.Error("Failed to get stdin pipe: %v", err)
 		return fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 
-	stdout, err := t.cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		logger.Error("Failed to get stdout pipe: %v", err)
 		return fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
 
-	stderr, err := t.cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		logger.Error("Failed to get stderr pipe: %v", err)
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
@@ -222,154 +175,31 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	logger.Debug("Starting ffmpeg process...")
 	ffmpegStart := time.Now()
 
-	t.mutex.Lock()
-	err = t.cmd.Start()
-	t.mutex.Unlock()
-
+	err = cmd.Start()
 	if err != nil {
 		logger.Error("Failed to start ffmpeg: %v", err)
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
-	t.mutex.Lock()
-	ffmpegPid := t.cmd.Process.Pid
-	t.mutex.Unlock()
-
-	logger.Debug("ffmpeg process started successfully with PID: %d in %.2f ms",
+	ffmpegPid := cmd.Process.Pid
+	logger.Debug("ffmpeg process started successfully with PID: %d in %d ms",
 		ffmpegPid, time.Since(ffmpegStart).Milliseconds())
 
-	// Handle client disconnection
-	disconnected := make(chan struct{})
+	// Set up cleanup for when we're done
+	defer func() {
+		if cmd.Process != nil {
+			logger.Debug("Killing ffmpeg process with PID: %d", ffmpegPid)
+			cmd.Process.Kill()
+		}
+	}()
 
 	// Log stderr output from ffmpeg
 	go func() {
-		logger.Debug("Starting stderr monitoring for channel %s (PID: %d)...", channel, ffmpegPid)
-		// Buffer to capture errors
-		buffer := make([]byte, 4096)
-
-		for {
-			n, err := stderr.Read(buffer)
-			if err != nil {
-				if err != io.EOF && t.ctx.Err() == nil {
-					logger.Debug("stderr read error: %v", err)
-				}
-				break
-			}
-
-			if n > 0 {
-				output := string(buffer[:n])
-				logger.Debug("ffmpeg[%d]: %s", ffmpegPid, strings.TrimSpace(output))
-			}
-		}
-		logger.Debug("stderr monitoring ended for PID: %d", ffmpegPid)
-	}()
-
-	// Copy from HDHomeRun to ffmpeg stdin
-	go func() {
-		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
-		defer stdin.Close()
-
-		buffer := make([]byte, 256*1024) // Increase to 256KB buffer for HDHomeRun reads
-		var totalBytes int64
-
-		// Periodically log progress
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-
-		done := make(chan struct{})
-
-		// Copy in chunks and report progress
-		go func() {
-			defer close(done)
-
-			// Create a new buffer writer for stdin to batch writes
-			stdinWriter := bufio.NewWriterSize(stdin, 512*1024)
-			defer stdinWriter.Flush()
-
-			// Add a flush ticker to ensure data is sent to ffmpeg regularly
-			flushInputTicker := time.NewTicker(50 * time.Millisecond)
-			defer flushInputTicker.Stop()
-
-			// Start flush goroutine for input
-			innerDone := make(chan struct{})
-			go func() {
-				defer close(innerDone)
-				for {
-					select {
-					case <-flushInputTicker.C:
-						stdinWriter.Flush()
-					case <-t.ctx.Done():
-						return
-					case <-done:
-						return
-					}
-				}
-			}()
-
-			for {
-				nr, er := resp.Body.Read(buffer)
-				if nr > 0 {
-					nw, ew := stdinWriter.Write(buffer[0:nr])
-					if nw < 0 || nr < nw {
-						nw = 0
-					}
-					totalBytes += int64(nw)
-
-					// Force flush for small data amounts to get ffmpeg started quickly
-					if totalBytes < 1024*1024 { // First 1MB
-						stdinWriter.Flush()
-					}
-
-					if ew != nil {
-						if t.ctx.Err() == nil { // Only log if not cancelled
-							if strings.Contains(ew.Error(), "broken pipe") {
-								logger.Info("Client disconnected while writing to ffmpeg (broken pipe)")
-							} else {
-								logger.Error("Error writing to ffmpeg: %v", ew)
-							}
-						}
-						break
-					}
-				}
-				if er != nil {
-					if er != io.EOF {
-						if t.ctx.Err() == nil { // Only log if not cancelled
-							if strings.Contains(er.Error(), "connection reset") ||
-								strings.Contains(er.Error(), "closed") {
-								logger.Info("HDHomeRun connection closed or reset")
-							} else {
-								logger.Error("Error reading from HDHomeRun: %v", er)
-							}
-						}
-					}
-					break
-				}
-			}
-
-			// Wait for flush goroutine to complete
-			<-innerDone
-		}()
-
-		// Monitor and log progress
-		for {
-			select {
-			case <-ticker.C:
-				logger.Debug("Channel %s: Copied %d bytes from HDHomeRun to ffmpeg so far",
-					channel, totalBytes)
-			case <-done:
-				logger.Debug("Channel %s: Finished copying from HDHomeRun, total bytes: %d",
-					channel, totalBytes)
-				close(disconnected)
-				return
-			case <-t.ctx.Done():
-				logger.Debug("Channel %s: Context cancelled while copying from HDHomeRun", channel)
-				return
-			}
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			logger.Debug("ffmpeg[%d]: %s", ffmpegPid, scanner.Text())
 		}
 	}()
-
-	// Copy from ffmpeg stdout to response
-	logger.Debug("Starting stream copy from ffmpeg to response writer for channel %s...", channel)
 
 	// Set appropriate headers for the response
 	w.Header().Set("Content-Type", "video/mp2t")
@@ -378,169 +208,45 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Transfer-Encoding", "chunked")
 
-	// Prepare a buffered writer for better streaming performance
-	bufWriter := bufio.NewWriterSize(w, 512*1024) // 512KB buffer for output
-	defer bufWriter.Flush()
+	// Create a WaitGroup to wait for both goroutines to finish
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// Use a larger buffer for better performance
-	buffer := make([]byte, 512*1024) // Increase to 512KB buffer for reading from ffmpeg
-	var written int64
-
-	// Create a pre-buffer to ensure smooth playback start
-	preBufferSize := 512 * 1024 // Reduce to 512KB pre-buffer (was 2MB)
-	preBuffer := make([]byte, 0, preBufferSize)
-	isPreBuffering := true
-
-	logger.Debug("Starting pre-buffering %d bytes of data for smooth playback...", preBufferSize)
-
-	// Add a timeout to pre-buffering to avoid waiting too long
-	preBufferTimeout := time.NewTimer(1 * time.Second) // Reduced from 3 seconds to 1 second
-	defer preBufferTimeout.Stop()
-
-	// Pre-buffer some data before starting to stream
-	preBufferDone := make(chan struct{})
-
+	// Copy from HDHomeRun to ffmpeg stdin
 	go func() {
-		for isPreBuffering {
-			nr, er := stdout.Read(buffer)
-			if nr > 0 {
-				// Add to pre-buffer
-				if len(preBuffer) < preBufferSize {
-					spaceLeft := preBufferSize - len(preBuffer)
-					bytesToAdd := nr
-					if bytesToAdd > spaceLeft {
-						bytesToAdd = spaceLeft
-					}
-					preBuffer = append(preBuffer, buffer[0:bytesToAdd]...)
-
-					// Check if we've filled the pre-buffer
-					if len(preBuffer) >= preBufferSize {
-						logger.Debug("Pre-buffering complete, starting streaming with %d bytes", len(preBuffer))
-						close(preBufferDone)
-						return
-					}
-				}
-			}
-
-			if er != nil {
-				if er == io.EOF {
-					// If we hit EOF during pre-buffering, just send what we have
-					logger.Debug("EOF during pre-buffering, sending %d buffered bytes", len(preBuffer))
-					close(preBufferDone)
-					return
-				} else {
-					logger.Error("Error during pre-buffering: %v", er)
-					close(preBufferDone)
-					return
-				}
-			}
+		defer wg.Done()
+		defer stdin.Close()
+		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
+		
+		copied, err := io.Copy(stdin, resp.Body)
+		if err != nil && err != io.EOF && ctx.Err() == nil {
+			logger.Error("Error copying from HDHomeRun to ffmpeg: %v", err)
 		}
+		logger.Debug("Finished copying from HDHomeRun to ffmpeg, bytes copied: %d", copied)
 	}()
 
-	// Wait for pre-buffer or timeout
-	select {
-	case <-preBufferDone:
-		// Pre-buffer is ready
-	case <-preBufferTimeout.C:
-		logger.Debug("Pre-buffer timeout, starting with %d bytes", len(preBuffer))
-	}
-
-	// Even if pre-buffer is empty, continue with streaming
-	if len(preBuffer) > 0 {
-		nw, ew := bufWriter.Write(preBuffer)
-		if ew != nil {
-			logger.Error("Error writing pre-buffer to client: %v", ew)
-			return fmt.Errorf("error writing pre-buffer: %w", ew)
-		}
-		written += int64(nw)
-		bufWriter.Flush() // Ensure the pre-buffer is sent immediately
-	}
-
-	// We're no longer pre-buffering
-	isPreBuffering = false
-
-	// Add a flush ticker to ensure data is sent regularly
-	flushTicker := time.NewTicker(100 * time.Millisecond)
-	defer flushTicker.Stop()
-
-	// Start flush goroutine
+	// Copy from ffmpeg stdout to response
 	go func() {
-		for {
-			select {
-			case <-flushTicker.C:
-				bufWriter.Flush()
-			case <-t.ctx.Done():
-				return
-			}
+		defer wg.Done()
+		logger.Debug("Starting stream copy from ffmpeg to response for channel %s...", channel)
+		
+		copied, err := io.Copy(w, stdout)
+		if err != nil && err != io.EOF && ctx.Err() == nil {
+			logger.Error("Error copying from ffmpeg to response: %v", err)
 		}
+		logger.Debug("Finished copying from ffmpeg to response, bytes copied: %d", copied)
 	}()
 
-	// Log progress periodically
-	progressTicker := time.NewTicker(5 * time.Second)
-	defer progressTicker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-progressTicker.C:
-				logger.Debug("Channel %s: Written %d bytes to client so far", channel, written)
-			case <-t.ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Copy in chunks and count bytes
-	for {
-		nr, er := stdout.Read(buffer)
-		if nr > 0 {
-			nw, ew := bufWriter.Write(buffer[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-			}
-			written += int64(nw)
-
-			// Flush more frequently during initial seconds to ensure data flows
-			if written < 1024*1024 { // First 1MB
-				bufWriter.Flush()
-			}
-
-			if ew != nil {
-				if t.ctx.Err() == nil { // Only log if not cancelled
-					if strings.Contains(ew.Error(), "broken pipe") ||
-						strings.Contains(ew.Error(), "connection reset") {
-						logger.Info("Client disconnected while writing response (channel %s)", channel)
-					} else {
-						logger.Error("Error writing to response for channel %s: %v", channel, ew)
-					}
-				}
-				break
-			}
-		}
-		if er != nil {
-			if er != io.EOF {
-				if t.ctx.Err() == nil { // Only log if not cancelled
-					if strings.Contains(er.Error(), "broken pipe") {
-						logger.Info("ffmpeg pipe closed while reading")
-					} else {
-						logger.Error("Error reading from ffmpeg for channel %s: %v", channel, er)
-					}
-				}
-			}
-			break
-		}
+	// Wait for both copy operations to complete
+	wg.Wait()
+	
+	// Wait for the process to exit
+	err = cmd.Wait()
+	if err != nil && ctx.Err() == nil {
+		logger.Error("ffmpeg process exited with error: %v", err)
 	}
 
-	logger.Debug("Copy from ffmpeg to response ended after %d bytes for channel %s", written, channel)
-
-	// Signal disconnection in case it hasn't been signaled yet
-	select {
-	case <-disconnected:
-		// Already closed
-	default:
-		close(disconnected)
-	}
-
+	logger.Debug("Transcoding completed for channel %s", channel)
 	return nil
 }
 
