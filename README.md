@@ -1,4 +1,4 @@
-# HDHR-AC4-Go
+# HDHR Proxy
 
 [![Docker Build](https://img.shields.io/github/actions/workflow/status/attaebra/hdhr-proxy/docker-build.yml?label=Docker%20Build&logo=docker)](https://github.com/attaebra/hdhr-proxy/actions/workflows/docker-build.yml)
 [![Go Tests](https://img.shields.io/github/actions/workflow/status/attaebra/hdhr-proxy/go-tests.yml?label=Tests&logo=go)](https://github.com/attaebra/hdhr-proxy/actions/workflows/go-tests.yml)

@@ -189,7 +189,9 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	defer func() {
 		if cmd.Process != nil {
 			logger.Debug("Killing ffmpeg process with PID: %d", ffmpegPid)
-			cmd.Process.Kill()
+			if err := cmd.Process.Kill(); err != nil {
+				logger.Error("Failed to kill ffmpeg process: %v", err)
+			}
 		}
 	}()
 
@@ -217,7 +219,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 		defer wg.Done()
 		defer stdin.Close()
 		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
-		
+
 		copied, err := io.Copy(stdin, resp.Body)
 		if err != nil && err != io.EOF && ctx.Err() == nil {
 			logger.Error("Error copying from HDHomeRun to ffmpeg: %v", err)
@@ -229,7 +231,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	go func() {
 		defer wg.Done()
 		logger.Debug("Starting stream copy from ffmpeg to response for channel %s...", channel)
-		
+
 		copied, err := io.Copy(w, stdout)
 		if err != nil && err != io.EOF && ctx.Err() == nil {
 			logger.Error("Error copying from ffmpeg to response: %v", err)
@@ -239,7 +241,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 
 	// Wait for both copy operations to complete
 	wg.Wait()
-	
+
 	// Wait for the process to exit
 	err = cmd.Wait()
 	if err != nil && ctx.Err() == nil {

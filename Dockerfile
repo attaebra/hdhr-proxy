@@ -1,40 +1,40 @@
 # Build stage
-FROM golang:1.24 AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Copy the Go modules manifests
+# Copy necessary files
 COPY go.mod go.sum ./
-# Download dependencies (if go.sum exists)
 RUN go mod download || true
 
-# Create directories first
-RUN mkdir -p ./cmd/hdhr-proxy ./internal ./pkg
-
-# Copy source code - check directory structure first
+# Copy source code
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o hdhr-proxy ./cmd/hdhr-proxy
+RUN go build -o hdhr-proxy ./cmd/hdhr-proxy
 
 # Final stage
 FROM debian:bullseye-slim
+
+WORKDIR /app
 
 # Install dependencies needed for extracting ffmpeg from Emby
 RUN apt-get update && apt-get install -y \
     curl \
     binutils \
     xz-utils \
+    ca-certificates \
     libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-
-# Copy only the necessary files from the builder stage
-COPY --from=builder /app/hdhr-proxy /app/
+# Copy binary from build stage
+COPY --from=builder /app/hdhr-proxy /app/hdhr-proxy
 COPY run.sh /app/
 
-RUN chmod +x /app/run.sh
+RUN chmod +x /app/hdhr-proxy /app/run.sh
+
+# Create necessary directories
+RUN mkdir -p /usr/lib /usr/bin
 
 # Expose ports
 EXPOSE 80
