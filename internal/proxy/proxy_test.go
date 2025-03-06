@@ -21,17 +21,17 @@ type mockHDHR struct {
 func newMockHDHR() *mockHDHR {
 	mock := &mockHDHR{}
 
-	// Create a test server that simulates the HDHomeRun
+	// Create a test server
 	handler := http.NewServeMux()
 
-	// Simulate the discover.json endpoint
-	handler.HandleFunc("/discover.json", func(w http.ResponseWriter, r *http.Request) {
+	// Add a discover.json endpoint
+	handler.HandleFunc("/discover.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"DeviceID":"ABCDEF01","LineupURL":"/lineup.json"}`))
+		w.Write([]byte(`{"DeviceID":"ABCDEF12","LocalIP":"192.168.1.100"}`))
 	})
 
-	// Simulate the lineup.json endpoint
-	handler.HandleFunc("/lineup.json", func(w http.ResponseWriter, r *http.Request) {
+	// Add a lineup.json endpoint
+	handler.HandleFunc("/lineup.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`[
 			{"GuideNumber":"5.1","GuideName":"NBC","URL":"http://192.168.1.100:5004/auto/v5.1"},
@@ -55,7 +55,7 @@ func (m *mockHDHR) URL() string {
 	return m.server.URL
 }
 
-// TestNewHDHRProxy tests the creation of a new HDHRProxy
+// TestNewHDHRProxy tests the creation of a new HDHRProxy.
 func TestNewHDHRProxy(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
@@ -75,7 +75,7 @@ func TestNewHDHRProxy(t *testing.T) {
 	}
 }
 
-// TestReverseDeviceID tests the device ID reversing method
+// TestReverseDeviceID tests the device ID reversing method.
 func TestReverseDeviceID(t *testing.T) {
 	testCases := []struct {
 		deviceID string
@@ -99,7 +99,7 @@ func TestReverseDeviceID(t *testing.T) {
 	}
 }
 
-// TestCreateAPIHandler tests the API handler creation
+// TestCreateAPIHandler tests the API handler creation.
 func TestCreateAPIHandler(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
@@ -147,14 +147,14 @@ func TestCreateAPIHandler(t *testing.T) {
 	// fetch the real device ID from the HDHomeRun or use a different transformation
 }
 
-// Test structure for the lineup item
+// LineupItem represents a channel in the lineup.
 type LineupItem struct {
 	GuideNumber string `json:"GuideNumber"`
 	GuideName   string `json:"GuideName"`
 	URL         string `json:"URL"`
 }
 
-// TestLineupModification tests that the lineup.json URLs are properly modified
+// TestLineupModification tests that the lineup.json URLs are properly modified.
 func TestLineupModification(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
@@ -198,7 +198,7 @@ func TestLineupModification(t *testing.T) {
 	// and may vary. We're just checking that we got a valid response.
 }
 
-// TestProxyRequest tests that requests are properly proxied
+// TestProxyRequest tests that requests are properly proxied.
 func TestProxyRequest(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)

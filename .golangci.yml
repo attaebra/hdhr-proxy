@@ -8,15 +8,69 @@ linters:
     - ineffassign    # Detects unused variable assignments
     - unused         # Checks for unused constants, variables, functions and types
     - misspell       # Checks for commonly misspelled English words
+    - gosec          # Security-focused linter
+    - gofmt          # Enforce Go formatting
+    - godot          # Check comment dots
+    - gocritic       # Check for various code style issues
+    - revive         # Fast, configurable, extensible, flexible linter
+
+linters-settings:
+  gosec:
+    # Exclude generated files
+    exclude-generated: true
+    severity: "high"
+    include-rules:
+      - G101 # Look for credentials in source code
+      - G104 # Audit errors not checked
+      - G107 # Unsafe URL validation
+      - G201 # SQL query construction using format string
+      - G202 # SQL query construction using string concatenation
+      - G203 # Use of unescaped data in HTML templates
+      - G304 # File path provided as taint input
+      - G401 # Crypto: Use of weak crypto primitives
+      - G404 # Crypto: Weak random number generator
+      - G501 # Blacklisted crypto: DES/3DES
+  
+  godot:
+    # Comments should end with a period
+    period: true
+    
+  gocritic:
+    # Enable common checks
+    enabled-checks:
+      - appendCombine
+      - boolExprSimplify
+      - commentedOutCode
+      - emptyFallthrough
+      - stringXbytes
 
 issues:
   exclude-rules:
+    # Exclude FFmpeg command injection false positive (already validated)
+    - linters:
+        - gosec
+      text: "G204: Subprocess launched with a potential tainted input or cmd arguments"
+      path: internal/media/transcoder.go
+    
     - path: _test\.go
       linters:
         - errcheck   # Don't require error checks in tests
+        - gosec      # Don't check security issues in tests
+    
+    # Exclude some security checks from main
+    - path: cmd/hdhr-proxy/main.go
+      linters:
+        - gosec
+        
   exclude-dirs:
     - vendor/
     - node_modules/
+  
+  # Maximum issues count per one linter
+  max-issues-per-linter: 50
+  
+  # Maximum count of issues with the same text
+  max-same-issues: 10
 
 run:
   deadline: 5m
@@ -24,4 +78,4 @@ run:
 
 output:
   formats: 
-    - format: colored-line-number 
+    - format: colored-line-number

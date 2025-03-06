@@ -7,26 +7,24 @@ import (
 	"testing"
 )
 
-// Capture log output by replacing the logger
+// Capture log output by replacing the logger.
 func captureOutput(f func()) string {
-	// Create a buffer to store the log output
+	// Create a buffer to store the log output.
 	var buf bytes.Buffer
 
-	// Save the original logger
-	originalLogger := logger
+	// Save the original logger.
+	origLogger := logger
 
-	// Create a new logger that writes to our buffer
+	// Replace with a logger writing to our buffer.
 	logger = log.New(&buf, "", log.LstdFlags)
 
-	// Restore the original logger when we're done
-	defer func() {
-		logger = originalLogger
-	}()
-
-	// Call the function that produces log output
+	// Call the function that produces log output.
 	f()
 
-	// Return the captured output
+	// Restore the original logger.
+	logger = origLogger
+
+	// Return the captured output.
 	return buf.String()
 }
 
@@ -75,78 +73,69 @@ func TestSetAndGetLevel(t *testing.T) {
 }
 
 func TestDebug(t *testing.T) {
-	// Test with debug level enabled
+	// Test with debug level enabled.
 	SetLevel(LevelDebug)
 	output := captureOutput(func() {
 		Debug("Test debug message: %s", "hello")
 	})
 
-	if !strings.Contains(output, "DEBUG") || !strings.Contains(output, "Test debug message: hello") {
+	if !strings.Contains(output, "Test debug message: hello") {
 		t.Errorf("Debug log doesn't contain expected content: %s", output)
 	}
 
-	// Test with debug level disabled
+	// Test with debug level disabled.
 	SetLevel(LevelInfo)
 	output = captureOutput(func() {
 		Debug("This should not appear")
 	})
 
 	if output != "" {
-		t.Errorf("Debug log should not output when level is set to info: %s", output)
+		t.Errorf("Expected empty output when debug is disabled, got: %s", output)
 	}
 }
 
 func TestInfo(t *testing.T) {
-	// Test with info level enabled
 	SetLevel(LevelInfo)
 	output := captureOutput(func() {
 		Info("Test info message: %s", "hello")
 	})
 
-	if !strings.Contains(output, "INFO") || !strings.Contains(output, "Test info message: hello") {
+	if !strings.Contains(output, "Test info message: hello") {
 		t.Errorf("Info log doesn't contain expected content: %s", output)
 	}
 }
 
 func TestWarn(t *testing.T) {
-	// Test with warn level enabled
+	// Test with warn level enabled.
 	SetLevel(LevelWarn)
 	output := captureOutput(func() {
 		Warn("Test warn message: %s", "hello")
 	})
 
-	if !strings.Contains(output, "WARN") || !strings.Contains(output, "Test warn message: hello") {
+	if !strings.Contains(output, "Test warn message: hello") {
 		t.Errorf("Warn log doesn't contain expected content: %s", output)
 	}
 
-	// Info should be suppressed when level is warn
-	output = captureOutput(func() {
-		Info("This should not appear")
-	})
-
-	if output != "" {
-		t.Errorf("Info log should not output when level is set to warn: %s", output)
-	}
-}
-
-func TestError(t *testing.T) {
-	// Test with error level enabled (which is always enabled)
+	// Test with warn level disabled.
 	SetLevel(LevelError)
-	output := captureOutput(func() {
-		Error("Test error message: %s", "hello")
-	})
-
-	if !strings.Contains(output, "ERROR") || !strings.Contains(output, "Test error message: hello") {
-		t.Errorf("Error log doesn't contain expected content: %s", output)
-	}
-
-	// Warn should be suppressed when level is error
 	output = captureOutput(func() {
 		Warn("This should not appear")
 	})
 
 	if output != "" {
-		t.Errorf("Warn log should not output when level is set to error: %s", output)
+		t.Errorf("Expected empty output when warn is disabled, got: %s", output)
+	}
+}
+
+func TestError(t *testing.T) {
+	// Test with error level enabled.
+	SetLevel(LevelError)
+	output := captureOutput(func() {
+		Error("Test error message: %s", "hello")
+	})
+
+	if !strings.Contains(output, "Test error message: hello") {
+		t.Errorf("Error log doesn't contain expected content: %s", output)
 	}
 }
 

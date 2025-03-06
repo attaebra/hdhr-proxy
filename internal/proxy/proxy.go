@@ -4,25 +4,25 @@
 package proxy
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/attaebra/hdhr-proxy/internal/logger"
+	"github.com/attaebra/hdhr-proxy/internal/utils"
 )
 
-// HDHRProxy handles proxying requests to the HDHomeRun and transforming the responses
+// HDHRProxy handles proxying requests to the HDHomeRun and transforming the responses.
 type HDHRProxy struct {
 	HDHRIP   string
 	DeviceID string
 	Client   *http.Client
 }
 
-// NewHDHRProxy creates a new HDHomeRun proxy instance
-// hdhrIP is the IP address of the HDHomeRun device to proxy requests to
-// Returns a configured proxy instance with the device ID fetched from the HDHomeRun
+// NewHDHRProxy creates a new HDHomeRun proxy instance.
+// hdhrIP is the IP address of the HDHomeRun device to proxy requests to.
+// Returns a configured proxy instance with the device ID fetched from the HDHomeRun.
 func NewHDHRProxy(hdhrIP string) *HDHRProxy {
 	return &HDHRProxy{
 		HDHRIP:   hdhrIP,
@@ -31,7 +31,7 @@ func NewHDHRProxy(hdhrIP string) *HDHRProxy {
 	}
 }
 
-// ReverseDeviceID reverses the device ID string
+// ReverseDeviceID reverses the device ID string.
 func (p *HDHRProxy) ReverseDeviceID() string {
 	runes := []rune(p.DeviceID)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
@@ -40,13 +40,13 @@ func (p *HDHRProxy) ReverseDeviceID() string {
 	return string(runes)
 }
 
-// FetchDeviceID retrieves the actual device ID from the HDHomeRun
+// FetchDeviceID retrieves the actual device ID from the HDHomeRun.
 func (p *HDHRProxy) FetchDeviceID() error {
+	defer utils.TimeOperation("Fetch device ID")()
 	logger.Debug("Fetching device ID from HDHomeRun at %s", p.HDHRIP)
 	resp, err := p.Client.Get("http://" + p.HDHRIP + "/discover.json")
 	if err != nil {
-		logger.Error("Failed to connect to HDHomeRun at %s: %v", p.HDHRIP, err)
-		return fmt.Errorf("failed to connect to HDHomeRun at %s: %w", p.HDHRIP, err)
+		return utils.LogAndWrapError(err, "failed to connect to HDHomeRun at %s", p.HDHRIP)
 	}
 	defer resp.Body.Close()
 
@@ -57,7 +57,7 @@ func (p *HDHRProxy) FetchDeviceID() error {
 	return nil
 }
 
-// HandleAppRequest processes app server requests by proxying to HDHomeRun and transforming responses
+// HandleAppRequest processes app server requests by proxying to HDHomeRun and transforming responses.
 func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
 	// Create a new URL from the original request
 	targetURL := &url.URL{
@@ -121,15 +121,15 @@ func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
 
 // transformResponseBody modifies the response body content from the HDHomeRun device
 // to ensure compatibility with media servers and clients. It performs several transformations:
-// 1. Replaces the original device ID with the reversed version for client compatibility
-// 2. Updates URLs to point to the proxy server instead of directly to the HDHomeRun
-// 3. Adjusts port numbers and host information to maintain proper routing
+// 1. Replaces the original device ID with the reversed version for client compatibility.
+// 2. Updates URLs to point to the proxy server instead of directly to the HDHomeRun.
+// 3. Adjusts port numbers and host information to maintain proper routing.
 //
 // Parameters:
-//   - body: The original response body from the HDHomeRun
-//   - host: The host header from the original request (used for URL rewriting)
+//   - body: The original response body from the HDHomeRun.
+//   - host: The host header from the original request (used for URL rewriting).
 //
-// Returns the transformed response body as a byte slice
+// Returns the transformed response body as a byte slice.
 func (p *HDHRProxy) transformResponseBody(body []byte, host string) []byte {
 	content := string(body)
 
@@ -171,7 +171,7 @@ func (p *HDHRProxy) transformResponseBody(body []byte, host string) []byte {
 	return []byte(content)
 }
 
-// CreateAPIHandler returns a http.Handler for the API endpoints
+// CreateAPIHandler returns a http.Handler for the API endpoints.
 func (p *HDHRProxy) CreateAPIHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -184,7 +184,7 @@ func (p *HDHRProxy) CreateAPIHandler() http.Handler {
 }
 
 // ProxyRequest handles proxying a single HTTP request to the HDHomeRun
-// and transforms the response appropriately
+// and transforms the response appropriately.
 func (p *HDHRProxy) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("Proxying request: %s %s", r.Method, r.URL.Path)
 

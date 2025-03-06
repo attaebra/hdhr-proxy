@@ -12,7 +12,7 @@ import (
 	"github.com/attaebra/hdhr-proxy/internal/logger"
 )
 
-// Mock HTTP server to simulate HDHomeRun
+// Mock HTTP server to simulate HDHomeRun.
 type mockHDHR struct {
 	server *httptest.Server
 }
@@ -20,24 +20,19 @@ type mockHDHR struct {
 func newMockHDHR() *mockHDHR {
 	mock := &mockHDHR{}
 
-	// Create a test server that simulates the HDHomeRun
+	// Create a test server
 	handler := http.NewServeMux()
 
-	// Simulate a channel stream
-	handler.HandleFunc("/auto/v", func(w http.ResponseWriter, r *http.Request) {
+	// Add auto/v endpoint
+	handler.HandleFunc("/auto/v", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "video/mp2t")
-
-		// Send a simple test pattern (not real MPEG-TS, just for testing)
-		for i := 0; i < 10; i++ {
-			w.Write([]byte("TEST-PATTERN-DATA"))
-			time.Sleep(50 * time.Millisecond) // Simulate stream delay
-		}
+		w.Write([]byte("test video data"))
 	})
 
-	// Simulate the device info endpoint
-	handler.HandleFunc("/discover.json", func(w http.ResponseWriter, r *http.Request) {
+	// Add discover.json endpoint
+	handler.HandleFunc("/discover.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"DeviceID":"ABCDEF01","LineupURL":"/lineup.json"}`))
+		w.Write([]byte(`{"DeviceID":"ABCDEF12","LocalIP":"192.168.1.100"}`))
 	})
 
 	// Create the test server
@@ -56,27 +51,43 @@ func (m *mockHDHR) URL() string {
 	return m.server.URL
 }
 
-// TestNewTranscoder tests the creation of a new transcoder
+// TestNewTranscoder tests the creation of a new transcoder.
 func TestNewTranscoder(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
 
+	// The URL format needs to match the format used in code
 	transcoder := NewTranscoder("/path/to/ffmpeg", "192.168.1.100")
 
 	if transcoder.FFmpegPath != "/path/to/ffmpeg" {
 		t.Errorf("Expected FFmpegPath to be /path/to/ffmpeg, got %s", transcoder.FFmpegPath)
 	}
 
-	if transcoder.InputURL != "http://192.168.1.100:5004" {
-		t.Errorf("Expected InputURL to be http://192.168.1.100:5004, got %s", transcoder.InputURL)
+	// Update the test for InputURL (should include port 5004)
+	expectedURL := "http://192.168.1.100:5004"
+	if transcoder.InputURL != expectedURL {
+		t.Errorf("Expected InputURL to be %s, got %s", expectedURL, transcoder.InputURL)
 	}
 
 	if transcoder.activeStreams == nil {
 		t.Error("Expected activeStreams to be initialized")
 	}
+
+	// Test new activity tracking fields
+	if transcoder.connectionActivity == nil {
+		t.Error("Expected connectionActivity to be initialized")
+	}
+
+	if transcoder.activityCheckInterval <= 0 {
+		t.Error("Expected activityCheckInterval to be positive")
+	}
+
+	if transcoder.maxInactivityDuration <= 0 {
+		t.Error("Expected maxInactivityDuration to be positive")
+	}
 }
 
-// TestCreateMediaHandler tests the creation of the HTTP handler
+// TestCreateMediaHandler tests the creation of the HTTP handler.
 func TestCreateMediaHandler(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
@@ -111,7 +122,7 @@ func TestCreateMediaHandler(t *testing.T) {
 	}
 }
 
-// TestStopAllTranscoding tests the StopAllTranscoding method
+// TestStopAllTranscoding tests the StopAllTranscoding method.
 func TestStopAllTranscoding(t *testing.T) {
 	// Initialize logger for tests
 	logger.SetLevel(logger.LevelDebug)
@@ -134,9 +145,12 @@ func TestStopAllTranscoding(t *testing.T) {
 	if count != 0 {
 		t.Errorf("Expected 0 active streams after StopAllTranscoding, got %d", count)
 	}
+
+	// Shutdown to stop the activity checker
+	transcoder.Shutdown()
 }
 
-// MockResponseWriter is a mock http.ResponseWriter for testing
+// MockResponseWriter is a mock http.ResponseWriter for testing.
 type MockResponseWriter struct {
 	headers http.Header
 	body    bytes.Buffer
@@ -162,7 +176,7 @@ func (m *MockResponseWriter) WriteHeader(statusCode int) {
 	m.status = statusCode
 }
 
-// TestTranscodeChannelNoFFmpeg tests that TranscodeChannel returns an error when ffmpeg is not found
+// TestTranscodeChannelNoFFmpeg tests that TranscodeChannel returns an error when ffmpeg is not found.
 func TestTranscodeChannelNoFFmpeg(t *testing.T) {
 	// Skip if running in CI environment
 	if os.Getenv("CI") == "true" {
@@ -206,7 +220,7 @@ func TestTranscodeChannelNoFFmpeg(t *testing.T) {
 	}
 }
 
-// TestFFmpegAvailability checks if ffmpeg is available for integration testing
+// TestFFmpegAvailability checks if ffmpeg is available for integration testing.
 func TestFFmpegAvailability(t *testing.T) {
 	// This is more of an informational test to help with debugging
 	// than an actual test of functionality
@@ -215,4 +229,44 @@ func TestFFmpegAvailability(t *testing.T) {
 	} else {
 		t.Log("FFmpeg is available at /usr/bin/ffmpeg")
 	}
+}
+
+// TestActivityTracking tests the activity tracking functionality.
+func TestActivityTracking(t *testing.T) {
+	// Initialize logger for tests
+	logger.SetLevel(logger.LevelDebug)
+
+	transcoder := NewTranscoder("/path/to/ffmpeg", "192.168.1.100")
+
+	// Reduce intervals for testing
+	transcoder.activityCheckInterval = 100 * time.Millisecond
+	transcoder.maxInactivityDuration = 200 * time.Millisecond
+
+	// Add a fake activity timestamp
+	channel := "5.1"
+	transcoder.updateActivityTimestamp(channel)
+
+	// Verify it was added
+	transcoder.activityMutex.Lock()
+	_, exists := transcoder.connectionActivity[channel]
+	transcoder.activityMutex.Unlock()
+
+	if !exists {
+		t.Error("Expected activity timestamp to be recorded")
+	}
+
+	// Wait for the cleanup to occur (should be after maxInactivityDuration)
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify it was cleaned up
+	transcoder.activityMutex.Lock()
+	_, stillExists := transcoder.connectionActivity[channel]
+	transcoder.activityMutex.Unlock()
+
+	if stillExists {
+		t.Error("Expected activity timestamp to be removed after inactivity")
+	}
+
+	// Shutdown to stop the activity checker
+	transcoder.Shutdown()
 }
