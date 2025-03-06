@@ -177,6 +177,12 @@ func TestTranscodeChannelNoFFmpeg(t *testing.T) {
 
 	// Mock an http response writer
 	w := NewMockResponseWriter()
+	
+	// Create a mock HTTP request
+	req, err := http.NewRequest("GET", "/auto/v5.1", nil)
+	if err != nil {
+		t.Fatalf("Failed to create mock request: %v", err)
+	}
 
 	// Use a mock HDHomeRun
 	mockHdhr := newMockHDHR()
@@ -186,7 +192,7 @@ func TestTranscodeChannelNoFFmpeg(t *testing.T) {
 	transcoder.InputURL = mockHdhr.URL()
 
 	// This should fail because the mock server returns 404 for the specific URL pattern
-	err := transcoder.TranscodeChannel(w, "5.1")
+	err = transcoder.TranscodeChannel(w, req, "5.1")
 
 	// We expect an error
 	if err == nil {

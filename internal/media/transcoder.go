@@ -177,7 +177,7 @@ func isClientDisconnectError(err error) bool {
 }
 
 // DirectStreamChannel streams the channel directly without transcoding
-func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, channel string) error {
+func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error {
 	start := time.Now()
 
 	// Track this stream in our active streams
@@ -189,11 +189,24 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, channel string) 
 	logger.Info("Direct streaming (no transcode) for channel: %s (active streams: %d)", channel, activeCount)
 	logger.Debug("Using input URL: %s/auto/v%s", t.InputURL, channel)
 
+	// Create a context that will be canceled when the client disconnects
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Monitor for client disconnection
+	go func() {
+		<-r.Context().Done()
+		logger.Debug("Detected client disconnect for channel %s - canceling direct stream", channel)
+		cancel()
+	}()
+	
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Recovered from panic in DirectStreamChannel: %v\nStack: %s", r, debug.Stack())
 		}
 
+		// Cancel the context to release resources
+		cancel()
+		
 		// Remove this stream from active streams
 		t.mutex.Lock()
 		delete(t.activeStreams, channel)
@@ -202,10 +215,6 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, channel string) 
 
 		logger.Info("Direct streaming session for channel %s ended after %.2f seconds", channel, duration)
 	}()
-
-	// Create a cancelable context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Create an HTTP client to fetch the stream
 	client := &http.Client{}
@@ -281,7 +290,7 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, channel string) 
 }
 
 // TranscodeChannel starts the ffmpeg process to transcode from AC4 to EAC3
-func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) error {
+func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, channel string) error {
 	start := time.Now()
 
 	// Track this stream in our active streams
@@ -293,11 +302,24 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 	logger.Info("Starting transcoding for channel: %s (active streams: %d)", channel, activeCount)
 	logger.Debug("Using input URL: %s/auto/v%s", t.InputURL, channel)
 
+	// Create a context that will be canceled when the client disconnects
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	// Monitor for client disconnection
+	go func() {
+		<-r.Context().Done()
+		logger.Debug("Detected client disconnect for channel %s - canceling transcoding", channel)
+		cancel()
+	}()
+	
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Recovered from panic in TranscodeChannel: %v\nStack: %s", r, debug.Stack())
 		}
 
+		// Cancel the context to release resources
+		cancel()
+		
 		// Remove this stream from active streams
 		t.mutex.Lock()
 		delete(t.activeStreams, channel)
@@ -306,10 +328,6 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, channel string) err
 
 		logger.Info("Transcoding session for channel %s ended after %.2f seconds", channel, duration)
 	}()
-
-	// Create a cancelable context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Create an HTTP client to fetch the stream
 	client := &http.Client{}
@@ -543,14 +561,14 @@ func (t *Transcoder) CreateMediaHandler() http.Handler {
 		// Check if this channel has AC4 audio needing transcoding
 		if t.isAC4Channel(channel) {
 			logger.Info("Processing channel %s with AC4 audio - transcoding to EAC3", channel)
-			if err := t.TranscodeChannel(w, channel); err != nil {
+			if err := t.TranscodeChannel(w, r, channel); err != nil {
 				logger.Error("Transcoding error for channel %s: %v", channel, err)
 				// Error already sent to client by TranscodeChannel
 			}
 		} else {
 			// For channels without AC4 audio, stream directly without transcoding
 			logger.Info("Processing channel %s without AC4 audio - direct streaming", channel)
-			if err := t.DirectStreamChannel(w, channel); err != nil {
+			if err := t.DirectStreamChannel(w, r, channel); err != nil {
 				logger.Error("Direct streaming error for channel %s: %v", channel, err)
 				// Error already handled by DirectStreamChannel
 			}
