@@ -191,14 +191,14 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 
 	// Create a context that will be canceled when the client disconnects
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Monitor for client disconnection
 	go func() {
 		<-r.Context().Done()
 		logger.Debug("Detected client disconnect for channel %s - canceling direct stream", channel)
 		cancel()
 	}()
-	
+
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Recovered from panic in DirectStreamChannel: %v\nStack: %s", r, debug.Stack())
@@ -206,7 +206,7 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 
 		// Cancel the context to release resources
 		cancel()
-		
+
 		// Remove this stream from active streams
 		t.mutex.Lock()
 		delete(t.activeStreams, channel)
@@ -304,14 +304,14 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, ch
 
 	// Create a context that will be canceled when the client disconnects
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Monitor for client disconnection
 	go func() {
 		<-r.Context().Done()
 		logger.Debug("Detected client disconnect for channel %s - canceling transcoding", channel)
 		cancel()
 	}()
-	
+
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Recovered from panic in TranscodeChannel: %v\nStack: %s", r, debug.Stack())
@@ -319,7 +319,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, ch
 
 		// Cancel the context to release resources
 		cancel()
-		
+
 		// Remove this stream from active streams
 		t.mutex.Lock()
 		delete(t.activeStreams, channel)

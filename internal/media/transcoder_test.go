@@ -177,7 +177,7 @@ func TestTranscodeChannelNoFFmpeg(t *testing.T) {
 
 	// Mock an http response writer
 	w := NewMockResponseWriter()
-	
+
 	// Create a mock HTTP request
 	req, err := http.NewRequest("GET", "/auto/v5.1", nil)
 	if err != nil {
