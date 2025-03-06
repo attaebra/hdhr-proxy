@@ -266,9 +266,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## Acknowledgments
+## Acknowledgments & Improvements
 
-- The HDHomeRun team for their excellent devices
-- Emby for providing FFmpeg binaries
-- The Go community for their fantastic tools and packages 
+This project was inspired by [whichken/hdhr-ac4](https://github.com/whichken/hdhr-ac4), a Node.js implementation that proxies HDHomeRun ATSC 3.0 tuners to transcode AC4 audio. While sharing a similar goal, this Go implementation offers several enhancements:
 
+### Key Improvements
+
+- **Go Implementation**: Written in Go for better performance, lower resource usage, and easier deployment
+- **Selective Transcoding**: Only transcodes channels with AC4 audio, passing through other channels directly without transcoding
+- **Smart Connection Management**: Properly detects client disconnections and immediately releases tuner resources
+- **Configurable Logging Levels**: Supports debug, info, warn, and error log levels configurable via environment variables
+
+Like the original project, this is released under the Apache 2.0 license.
