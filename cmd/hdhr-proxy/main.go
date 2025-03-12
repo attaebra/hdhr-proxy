@@ -14,7 +14,7 @@ import (
 
 	"github.com/attaebra/hdhr-proxy/internal/constants"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
-	"github.com/attaebra/hdhr-proxy/internal/media"
+	"github.com/attaebra/hdhr-proxy/internal/media/transcoder"
 	"github.com/attaebra/hdhr-proxy/internal/proxy"
 )
 
@@ -49,7 +49,7 @@ func main() {
 	}
 
 	// Initialize the transcoder.
-	transcoder := media.NewTranscoder(*ffmpegPath, *hdhrIP)
+	transcoder := transcoder.NewTranscoder(*ffmpegPath, *hdhrIP)
 
 	// Set up API server.
 	apiServer := &http.Server{

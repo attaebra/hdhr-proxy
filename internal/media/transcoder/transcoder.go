@@ -1,4 +1,4 @@
-package media
+package transcoder
 
 import (
 	"bufio"
@@ -16,6 +16,9 @@ import (
 
 	"github.com/attaebra/hdhr-proxy/internal/constants"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
+	"github.com/attaebra/hdhr-proxy/internal/media/buffer"
+	"github.com/attaebra/hdhr-proxy/internal/media/ffmpeg"
+	"github.com/attaebra/hdhr-proxy/internal/media/stream"
 	"github.com/attaebra/hdhr-proxy/internal/proxy"
 	"github.com/attaebra/hdhr-proxy/internal/utils"
 )
@@ -38,6 +41,11 @@ type Transcoder struct {
 	activityMutex         sync.Mutex
 	stopActivityCheck     context.CancelFunc
 	ffmpegProcesses       map[int]string
+
+	// New fields for the improved buffer and streaming modules
+	BufferManager *buffer.Manager
+	FFmpegConfig  *ffmpeg.Config
+	StreamHelper  *stream.Helper
 }
 
 // NewTranscoder creates a new transcoder instance.
@@ -70,6 +78,19 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	// Create context for the activity checker
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Initialize the buffer manager with optimized sizes
+	bufferManager := buffer.NewManager(
+		4*1024*1024, // 4MB ring buffer for smoother playback
+		64*1024,     // 64KB read buffer chunks
+		128*1024,    // 128KB write buffer chunks
+	)
+
+	// Create the optimized FFmpeg config
+	ffmpegConfig := ffmpeg.NewOptimizedConfig()
+
+	// Create stream helper
+	streamHelper := stream.NewHelper(bufferManager)
+
 	t := &Transcoder{
 		FFmpegPath:            ffmpegPath,
 		proxy:                 hdhrProxy,
@@ -83,6 +104,11 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 		maxInactivityDuration: 2 * time.Minute,  // Kill after 2 minutes of inactivity
 		ctx:                   ctx,
 		stopActivityCheck:     cancel,
+
+		// Initialize new modules
+		BufferManager: bufferManager,
+		FFmpegConfig:  ffmpegConfig,
+		StreamHelper:  streamHelper,
 	}
 
 	// Fetch the channel lineup to identify AC4 channels
@@ -278,25 +304,24 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 	// Set appropriate headers for streaming
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 
-	// Create a buffered writer to smooth output
-	bufSize := 256 * 1024 // 256KB buffer
-	bufferedWriter := bufio.NewWriterSize(w, bufSize)
-	defer bufferedWriter.Flush()
-
-	// Copy the stream directly to the response
-	logger.Debug("Starting stream copy from HDHomeRun to response for channel %s...", channel)
-	bytesCopied, err := io.Copy(bufferedWriter, resp.Body)
+	// Use our buffered copy for smoother streaming instead of simple io.Copy
+	logger.Debug("Starting buffered stream copy from HDHomeRun to response for channel %s...", channel)
+	bytesCopied, err := t.StreamHelper.BufferedCopy(ctx, w, resp.Body)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
 			logger.Debug("Client disconnected during direct stream for channel %s: %v", channel, err)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error copying from HDHomeRun to response: %v", err)
+		logger.Error("Error in buffered copy from HDHomeRun to response: %v", err)
 		return fmt.Errorf("stream interrupted: %w", err)
 	}
 
-	logger.Debug("Finished direct stream copy, bytes copied: %d", bytesCopied)
+	// Log buffer stats for debugging
+	used, capacity := t.StreamHelper.GetBufferStatus()
+	logger.Debug("Finished direct stream copy, bytes copied: %d, final buffer status: %d/%d bytes",
+		bytesCopied, used, capacity)
+
 	return nil
 }
 
@@ -636,19 +661,8 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 		return fmt.Errorf("invalid FFmpeg executable: %w", err)
 	}
 
-	// Build more optimized ffmpeg command
-	cmd := exec.CommandContext(ctx, t.FFmpegPath,
-		"-i", "pipe:0", // Read from stdin
-		"-c:v", "copy", // Copy video codec (no transcoding)
-		"-c:a", "eac3", // Convert audio to EAC3
-		"-b:a", "384k", // Set audio bitrate
-		"-ac", "2", // Convert to stereo
-		"-bufsize", "8192k", // Increase buffer size for smoother playback
-		"-maxrate", "20M", // Set maximum bitrate
-		"-preset", "superfast", // Use superfast preset for better performance
-		"-threads", "2", // Limit thread usage for audio encoding
-		"-f", "mpegts", // Output format
-		"pipe:1") // Output to stdout
+	// Use the optimized FFmpeg config with improved parameters
+	cmd := exec.CommandContext(ctx, t.FFmpegPath, t.FFmpegConfig.BuildArgs()...)
 
 	// Get pipes for stdin, stdout, and stderr
 	stdin, err := cmd.StdinPipe()
@@ -713,40 +727,66 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 	// Set appropriate content type header
 	w.Header().Set("Content-Type", "video/MP2T")
 
-	// Create a buffer to smooth output
-	bufSize := 256 * 1024 // 256KB buffer
-	bufferedWriter := bufio.NewWriterSize(w, bufSize)
-	defer bufferedWriter.Flush()
-
 	// Set up a goroutine to copy from HDHomeRun to ffmpeg
 	go func() {
 		defer stdin.Close()
 		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
-		bytesCopied, err := io.Copy(stdin, r)
-		if err != nil {
-			if strings.Contains(err.Error(), "connection reset by peer") ||
-				strings.Contains(err.Error(), "broken pipe") {
-				logger.Debug("Client disconnected during HDHomeRun to ffmpeg copy for channel %s: %v", channel, err)
-			} else {
-				logger.Error("Error copying from HDHomeRun to ffmpeg: %v", err)
+		// Get a buffer from the pool for reading
+		readBuf := t.BufferManager.GetReadBuffer()
+		defer t.BufferManager.ReleaseBuffer(readBuf)
+
+		// Use a buffered copy approach
+		var totalCopied int64
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Debug("Context canceled during HDHomeRun to ffmpeg copy")
+				return
+			default:
+				// Read from the source
+				n, err := r.Read(readBuf.B)
+				if n > 0 {
+					// Write to ffmpeg stdin
+					_, werr := stdin.Write(readBuf.B[:n])
+					totalCopied += int64(n)
+					if werr != nil {
+						if strings.Contains(werr.Error(), "broken pipe") {
+							logger.Debug("FFmpeg pipe closed during write")
+						} else {
+							logger.Error("Error writing to ffmpeg: %v", werr)
+						}
+						return
+					}
+				}
+				if err != nil {
+					if err != io.EOF &&
+						!strings.Contains(err.Error(), "connection reset by peer") &&
+						!strings.Contains(err.Error(), "broken pipe") {
+						logger.Error("Error reading from HDHomeRun: %v", err)
+					}
+					return
+				}
 			}
 		}
-		logger.Debug("Finished copying from HDHomeRun to ffmpeg, bytes copied: %d", bytesCopied)
 	}()
 
-	// Copy from ffmpeg to the client
-	logger.Debug("Starting stream copy from ffmpeg to response for channel %s...", channel)
-	bytesCopied, err := io.Copy(bufferedWriter, stdout)
+	// Use the stream helper for buffered copying from ffmpeg to the client
+	logger.Debug("Starting buffered stream copy from ffmpeg to response for channel %s...", channel)
+	bytesCopied, err := t.StreamHelper.BufferedCopy(ctx, w, stdout)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
 			logger.Debug("Client disconnected during ffmpeg to client copy for channel %s: %v", channel, err)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error copying from ffmpeg to response: %v", err)
+		logger.Error("Error in buffered copy from ffmpeg to response: %v", err)
 		return fmt.Errorf("failed to copy from ffmpeg to response: %w", err)
 	}
-	logger.Debug("Finished copying from ffmpeg to response, bytes copied: %d", bytesCopied)
+
+	// Log buffer stats for debugging
+	used, capacity := t.StreamHelper.GetBufferStatus()
+	logger.Debug("Finished buffered copy from ffmpeg to response, bytes copied: %d, final buffer status: %d/%d bytes",
+		bytesCopied, used, capacity)
 
 	// Wait for ffmpeg to exit
 	if err := cmd.Wait(); err != nil {

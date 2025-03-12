@@ -35,9 +35,15 @@ hdhr-proxy/
 ├── cmd/                 # Application entry points
 │   └── hdhr-proxy/      # Main application
 ├── internal/            # Private application packages
+│   ├── constants/       # Project-wide constant values
 │   ├── logger/          # Logging functionality
 │   ├── media/           # Media transcoding and streaming
-│   └── proxy/           # HDHomeRun API proxying
+│   │   ├── buffer/      # Efficient buffer management
+│   │   ├── ffmpeg/      # FFmpeg configuration and parameters
+│   │   ├── stream/      # Stream copying and status tracking
+│   │   └── transcoder/  # Media transcoding functionality
+│   ├── proxy/           # HDHomeRun API proxying
+│   └── utils/           # Utility functions and helpers
 ├── pkg/                 # Public API packages (if any)
 ├── .github/             # GitHub Actions workflows
 ├── Dockerfile           # Docker build instructions
@@ -47,7 +53,23 @@ hdhr-proxy/
 - **cmd/hdhr-proxy/**: Contains the main application entry point
 - **internal/logger/**: Implements the custom logging system with multiple log levels
 - **internal/media/**: Handles media stream transcoding and the `/status` endpoint
+  - **buffer/**: Manages efficient memory buffering for stream processing
+  - **ffmpeg/**: Handles FFmpeg configuration and command-line parameter generation
+  - **stream/**: Provides utilities for stream copying with buffer management
+  - **transcoder/**: Core transcoding functionality for AC4 to EAC3 conversion
 - **internal/proxy/**: Manages the HDHomeRun device communication and API transformations
+
+## Stream Handling and Buffering
+
+The application uses several optimizations for efficient media streaming:
+
+1. **Buffer Management**: Implements a ring buffer system to efficiently handle stream data
+2. **FFmpeg Configuration**: Optimized FFmpeg parameters for low-latency streaming
+   - Thread queue size configuration correctly applied to input stream
+   - Optimized buffer sizes for various network conditions
+   - Zero-latency tuning for minimal delay
+3. **Stream Copy**: Efficient stream copying between components with buffer status tracking
+4. **Context Cancellation**: Proper resource cleanup when streams are disconnected
 
 ## Quick Start
 
@@ -96,6 +118,8 @@ This project was inspired by [whichken/hdhr-ac4](https://github.com/whichken/hdh
 - **Selective Transcoding**: Only transcodes channels with AC4 audio, passing through other channels directly without transcoding
 - **Smart Connection Management**: Properly detects client disconnections and immediately releases tuner resources
 - **Configurable Logging Levels**: Supports debug, info, warn, and error log levels configurable via environment variables
+management, FFmpeg configuration, and stream handling for better maintainability.
+- **Enhanced Buffering**: Implemented improved buffer management for smoother streaming with fewer interruptions.
 
 ## Development
 
@@ -203,15 +227,6 @@ golangci-lint run --fix
 ```bash
 docker build -t hdhr-proxy .
 ```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Connection Timeout**: Ensure your HDHomeRun IP is correct and accessible
-2. **Missing Channels**: Verify that your HDHomeRun can receive the channel
-3. **Transcoding Errors**: Check that FFmpeg is properly extracted (watch container logs)
-
 ### Logs
 
 Container logs will show download progress, FFmpeg extraction, and any errors:
