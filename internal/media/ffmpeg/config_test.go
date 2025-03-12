@@ -93,6 +93,7 @@ func TestBuildArgs(t *testing.T) {
 
 	// Count the actual parameters
 	expectedParameters := []string{
+		"-thread_queue_size", "4096",
 		"-i", "pipe:0",
 		"-c:v", "copy",
 		"-c:a", "eac3",
@@ -102,7 +103,6 @@ func TestBuildArgs(t *testing.T) {
 		"-maxrate", "30M",
 		"-preset", "superfast",
 		"-tune", "zerolatency",
-		"-thread_queue_size", "4096",
 		"-max_muxing_queue_size", "1024",
 		"-threads", "4",
 		"-f", "mpegts",
@@ -115,8 +115,12 @@ func TestBuildArgs(t *testing.T) {
 	}
 
 	// Verify key parameters are present and in the right order
-	if args[0] != "-i" || args[1] != "pipe:0" {
-		t.Errorf("Expected first parameter to be -i pipe:0, got %s %s", args[0], args[1])
+	if args[0] != "-thread_queue_size" || args[1] != "4096" {
+		t.Errorf("Expected first parameter to be -thread_queue_size 4096, got %s %s", args[0], args[1])
+	}
+
+	if args[2] != "-i" || args[3] != "pipe:0" {
+		t.Errorf("Expected input parameter to be -i pipe:0, got %s %s", args[2], args[3])
 	}
 
 	// Check for specific optimization parameters

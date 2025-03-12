@@ -11,7 +11,7 @@ import (
 	"github.com/attaebra/hdhr-proxy/internal/media/buffer"
 )
 
-// mockReader implements io.Reader for testing
+// mockReader implements io.Reader for testing.
 type mockReader struct {
 	data        []byte
 	chunkSize   int
@@ -75,7 +75,7 @@ func (m *mockReader) Read(p []byte) (n int, err error) {
 	return readSize, nil
 }
 
-// mockWriter implements io.Writer for testing
+// mockWriter implements io.Writer for testing.
 type mockWriter struct {
 	buffer       bytes.Buffer
 	writeDelay   time.Duration // Delay before each write to simulate network latency
@@ -135,65 +135,65 @@ func (m *mockWriter) Bytes() []byte {
 	return m.buffer.Bytes()
 }
 
-// TestBufferedCopyBasic tests basic functionality of the BufferedCopy method
+// TestBufferedCopyBasic tests basic functionality of the BufferedCopy method.
 func TestBufferedCopyBasic(t *testing.T) {
 	// Create test data
 	testData := []byte("This is test data for buffered copying. It should be copied correctly from source to destination.")
-	
+
 	// Create a mock reader and writer
 	reader := newMockReader(testData, 16) // Read in 16-byte chunks
 	writer := newMockWriter()
-	
+
 	// Create a buffer manager with small sizes for testing
 	bufferManager := buffer.NewManager(128, 32, 32)
-	
+
 	// Create the stream helper
 	helper := NewHelper(bufferManager)
-	
+
 	// Create a context
 	ctx := context.Background()
-	
+
 	// Perform the buffered copy
 	copied, err := helper.BufferedCopy(ctx, writer, reader)
-	
+
 	// Verify results
 	if err != nil {
 		t.Errorf("Expected no error, got: %v", err)
 	}
-	
+
 	if copied != int64(len(testData)) {
 		t.Errorf("Expected to copy %d bytes, but copied %d", len(testData), copied)
 	}
-	
+
 	if !bytes.Equal(writer.Bytes(), testData) {
 		t.Errorf("Copied data doesn't match original data")
 	}
 }
 
-// TestBufferedCopyWithContextCancellation tests that BufferedCopy respects context cancellation
+// TestBufferedCopyWithContextCancellation tests that BufferedCopy respects context cancellation.
 func TestBufferedCopyWithContextCancellation(t *testing.T) {
 	// Create a larger test data set
 	testData := make([]byte, 100*1024) // 100KB
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	
+
 	// Create a mock reader with delay to ensure we can cancel before completion
 	reader := newMockReader(testData, 1024).withDelay(5 * time.Millisecond)
 	writer := newMockWriter()
-	
+
 	// Create a buffer manager with small sizes for testing
 	bufferManager := buffer.NewManager(8*1024, 1024, 1024)
-	
+
 	// Create the stream helper
 	helper := NewHelper(bufferManager)
-	
+
 	// Create a context with cancel function
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	// Create a channel to signal when copy is done
 	done := make(chan struct{})
-	
+
 	// Start the copy operation in a goroutine
 	var copied int64
 	var err error
@@ -201,11 +201,11 @@ func TestBufferedCopyWithContextCancellation(t *testing.T) {
 		copied, err = helper.BufferedCopy(ctx, writer, reader)
 		close(done)
 	}()
-	
+
 	// Cancel the context after a short time
 	time.Sleep(20 * time.Millisecond)
 	cancel()
-	
+
 	// Wait for the operation to complete
 	select {
 	case <-done:
@@ -213,124 +213,174 @@ func TestBufferedCopyWithContextCancellation(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("BufferedCopy did not respect context cancellation")
 	}
-	
+
 	// Verify results
 	if err != context.Canceled {
 		t.Errorf("Expected context.Canceled error, got: %v", err)
 	}
-	
+
 	if copied >= int64(len(testData)) {
 		t.Errorf("Expected partial copy, but copied all %d bytes", copied)
 	}
 }
 
-// TestBufferedCopyWithReadError tests handling of read errors
+// TestBufferedCopyWithReadError tests handling of read errors.
 func TestBufferedCopyWithReadError(t *testing.T) {
 	// Create smaller test data to avoid ring buffer getting full
 	testData := make([]byte, 4*1024) // 4KB
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	
+
 	// Create a custom error
 	customError := errors.New("simulated read error")
-	
+
 	// Create a mock reader that returns an error after 2KB
 	reader := newMockReader(testData, 512).withErrorAfter(2*1024, customError)
 	writer := newMockWriter()
-	
+
 	// Create a buffer manager with smaller sizes for testing
 	bufferManager := buffer.NewManager(4*1024, 512, 512)
-	
+
 	// Create the stream helper
 	helper := NewHelper(bufferManager)
-	
+
 	// Create a context
 	ctx := context.Background()
-	
+
 	// Perform the buffered copy
 	copied, err := helper.BufferedCopy(ctx, writer, reader)
-	
+
 	// Verify results
 	if err != customError {
 		t.Errorf("Expected custom error, got: %v", err)
 	}
-	
+
 	if copied != 2*1024 {
 		t.Errorf("Expected to copy 2KB before error, but copied %d bytes", copied)
 	}
 }
 
-// TestBufferedCopyWithWriteError tests handling of write errors
+// TestBufferedCopyWithWriteError tests handling of write errors.
 func TestBufferedCopyWithWriteError(t *testing.T) {
 	// Create smaller test data to avoid ring buffer getting full
 	testData := make([]byte, 4*1024) // 4KB
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	
+
 	// Create a custom error
 	customError := errors.New("simulated write error")
-	
+
 	// Create a mock reader and writer that returns an error after 2KB
-	reader := newMockReader(testData, 512) 
+	reader := newMockReader(testData, 512)
 	writer := newMockWriter().withErrorAfter(2*1024, customError)
-	
+
 	// Create a buffer manager with smaller sizes for testing
 	bufferManager := buffer.NewManager(4*1024, 512, 512)
-	
+
 	// Create the stream helper
 	helper := NewHelper(bufferManager)
-	
+
 	// Create a context
 	ctx := context.Background()
-	
+
 	// Perform the buffered copy
 	copied, err := helper.BufferedCopy(ctx, writer, reader)
-	
+
 	// Verify results
 	if err != customError {
 		t.Errorf("Expected custom error, got: %v", err)
 	}
-	
+
 	if copied > 2*1024 {
 		t.Errorf("Expected to copy no more than 2KB before error, but copied %d bytes", copied)
 	}
 }
 
-// TestGetBufferStatus tests the GetBufferStatus method
+// TestGetBufferStatus tests the GetBufferStatus method.
 func TestGetBufferStatus(t *testing.T) {
 	// Create a buffer manager with known size
 	ringBufferSize := 1024
 	bufferManager := buffer.NewManager(ringBufferSize, 64, 64)
-	
+
 	// Create the stream helper
 	helper := NewHelper(bufferManager)
-	
+
 	// Check initial status
 	used, capacity := helper.GetBufferStatus()
 	if used != 0 {
 		t.Errorf("Expected 0 bytes used initially, got %d", used)
 	}
-	
+
 	if capacity != ringBufferSize {
 		t.Errorf("Expected %d bytes capacity, got %d", ringBufferSize, capacity)
 	}
-	
+
 	// Write some data to the ring buffer
 	testData := []byte("test data for buffer status")
 	_, err := bufferManager.RingBuffer.Write(testData)
 	if err != nil {
 		t.Errorf("Failed to write to ring buffer: %v", err)
 	}
-	
+
 	// Check updated status
 	used, capacity = helper.GetBufferStatus()
 	if used != len(testData) {
 		t.Errorf("Expected %d bytes used, got %d", len(testData), used)
 	}
-	
+
 	if capacity != ringBufferSize {
 		t.Errorf("Expected %d bytes capacity, got %d", ringBufferSize, capacity)
 	}
-} 
+}
+
+// TestBufferedCopyWithWriteDelay tests buffered copy with write delays.
+func TestBufferedCopyWithWriteDelay(t *testing.T) {
+	// Create test data
+	testData := make([]byte, 16*1024) // 16KB
+	for i := range testData {
+		testData[i] = byte(i % 256)
+	}
+
+	// Create a mock reader and writer with delay
+	reader := newMockReader(testData, 1024)
+	writer := newMockWriter().withDelay(5 * time.Millisecond) // Use the withDelay method here
+
+	// Create a buffer manager
+	bufferManager := buffer.NewManager(8*1024, 1024, 1024)
+
+	// Create the stream helper
+	helper := NewHelper(bufferManager)
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Measure the time it takes to copy with delay
+	startTime := time.Now()
+	copied, err := helper.BufferedCopy(ctx, writer, reader)
+	duration := time.Since(startTime)
+
+	// Verify results
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	if copied != int64(len(testData)) {
+		t.Errorf("Expected to copy %d bytes, but copied %d", len(testData), copied)
+	}
+
+	// Since we have a 5ms delay per write and we're writing in 1KB chunks,
+	// the total time should be significantly affected by the delay
+	expectedMinimumTime := 50 * time.Millisecond
+	if duration < expectedMinimumTime {
+		t.Errorf("Expected copy to take at least %v due to write delays, but it took %v",
+			expectedMinimumTime, duration)
+	}
+
+	// Verify data integrity
+	if !bytes.Equal(writer.Bytes(), testData) {
+		t.Errorf("Copied data doesn't match original data")
+	}
+}
