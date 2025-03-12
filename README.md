@@ -6,8 +6,6 @@
 
 A high-performance Go implementation of a proxy for HDHomeRun ATSC 3.0 tuners that converts AC4 audio to EAC3 for compatibility with media players like Plex, Emby, and VLC.
 
-![HDHomeRun FLEX 4K](https://www.silicondust.com/wordpress/wp-content/uploads/2021/06/HDHR-FLEX-4K-1000x563.jpg)
-
 ## Overview
 
 ATSC 3.0 (NextGen TV) broadcasts often use AC4 audio encoding, which isn't compatible with many media players. This proxy sits between your media player and an HDHomeRun ATSC 3.0 tuner to:
@@ -26,6 +24,7 @@ ATSC 3.0 (NextGen TV) broadcasts often use AC4 audio encoding, which isn't compa
 - **Cross-Platform Support**: Runs on x86_64 and ARM64 architectures
 - **Docker Ready**: Easy deployment via containerization
 - **Minimal Dependencies**: Uses FFmpeg extracted from Emby for transcoding
+- **Performance Optimization**: Advanced buffering and hardware acceleration support
 
 ## Project Structure
 
@@ -65,6 +64,7 @@ Replace `192.168.1.101` with the IP address of your HDHomeRun device.
 - `HDHR_IP` (required): IP address of your HDHomeRun tuner
 - `LINK` (optional): Custom URL to an Emby .deb package for FFmpeg extraction
 - `LOG_LEVEL` (optional): Logging verbosity (debug, info, warn, error) - default is info
+- `REQUEST_TIMEOUT` (optional): HTTP request timeout duration (e.g., "30s", "1m")
 
 ### Port Mapping
 
@@ -85,6 +85,17 @@ Replace `192.168.1.101` with the IP address of your HDHomeRun device.
 1. Open VLC and select "Open Network Stream"
 2. Enter the URL: `http://localhost:5004/auto/v5.1` (replace v5.1 with your channel number)
 3. Click "Play"
+
+## Acknowledgments
+
+This project was inspired by [whichken/hdhr-ac4](https://github.com/whichken/hdhr-ac4), a Node.js implementation that proxies HDHomeRun ATSC 3.0 tuners to transcode AC4 audio. While sharing a similar goal, this Go implementation offers several enhancements:
+
+### Key Improvements
+
+- **Go Implementation**: Written in Go for better performance, lower resource usage, and easier deployment
+- **Selective Transcoding**: Only transcodes channels with AC4 audio, passing through other channels directly without transcoding
+- **Smart Connection Management**: Properly detects client disconnections and immediately releases tuner resources
+- **Configurable Logging Levels**: Supports debug, info, warn, and error log levels configurable via environment variables
 
 ## Development
 
@@ -127,35 +138,11 @@ Run tests with verbose output:
 go test -v ./...
 ```
 
-Run tests with coverage report:
-```bash
-go test -cover ./...
-```
-
-Generate a detailed HTML coverage report:
-```bash
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
-```
-
-#### Testing Specific Packages
-
-Test only the proxy package:
-```bash
-go test ./internal/proxy
-```
-
-Test only the media package:
-```bash
-go test ./internal/media
-```
-
 #### Test Environment Variables
 
 Some tests can be customized with environment variables:
 
 - `LOG_LEVEL`: Set logging level (debug, info, warn, error) during tests
-- `CI`: Set to "true" to skip tests that require external resources
 
 #### Manual Testing
 
@@ -176,9 +163,6 @@ For manual testing with the HDHomeRun:
    ```bash
    # Using VLC:
    vlc http://localhost:5004/auto/v5.1
-   
-   # Using ffplay:
-   ffplay http://localhost:5004/auto/v5.1
    ```
 
 4. Check the status endpoint:
@@ -204,11 +188,6 @@ Run the linter on the entire codebase:
 golangci-lint run
 ```
 
-Run the linter with specific checks:
-```bash
-golangci-lint run --enable=govet,errcheck,staticcheck,unused,gosimple
-```
-
 Generate a report in various formats:
 ```bash
 golangci-lint run --out-format=json > lint-report.json
@@ -218,11 +197,6 @@ Fix automatically fixable issues:
 ```bash
 golangci-lint run --fix
 ```
-
-#### Integrating with CI
-
-The project's CI workflow automatically runs linting checks on every pull request.
-You can view the linting configuration in `.golangci.yml` at the root of the repository.
 
 ### Docker Build
 
@@ -252,29 +226,6 @@ Set the `LOG_LEVEL` environment variable to `debug` for more detailed logs:
 docker run -e HDHR_IP=192.168.1.101 -e LOG_LEVEL=debug -p 5003:80 -p 5004:5004 ghcr.io/attaebra/hdhr-proxy:latest
 ```
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments & Improvements
-
-This project was inspired by [whichken/hdhr-ac4](https://github.com/whichken/hdhr-ac4), a Node.js implementation that proxies HDHomeRun ATSC 3.0 tuners to transcode AC4 audio. While sharing a similar goal, this Go implementation offers several enhancements:
-
-### Key Improvements
-
-- **Go Implementation**: Written in Go for better performance, lower resource usage, and easier deployment
-- **Selective Transcoding**: Only transcodes channels with AC4 audio, passing through other channels directly without transcoding
-- **Smart Connection Management**: Properly detects client disconnections and immediately releases tuner resources
-- **Configurable Logging Levels**: Supports debug, info, warn, and error log levels configurable via environment variables
-
-Like the original project, this is released under the Apache 2.0 license.
