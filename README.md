@@ -44,10 +44,8 @@ hdhr-proxy/
 │   │   └── transcoder/  # Media transcoding functionality
 │   ├── proxy/           # HDHomeRun API proxying
 │   └── utils/           # Utility functions and helpers
-├── pkg/                 # Public API packages (if any)
 ├── .github/             # GitHub Actions workflows
 ├── Dockerfile           # Docker build instructions
-└── test-local.sh        # Local testing script
 ```
 
 - **cmd/hdhr-proxy/**: Contains the main application entry point
