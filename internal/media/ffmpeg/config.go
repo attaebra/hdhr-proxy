@@ -34,13 +34,13 @@ func NewOptimizedConfig() *Config {
 		AudioCodec:         "eac3",
 		AudioBitrate:       "384k",
 		AudioChannels:      "2",
-		BufferSize:         "12288k", // Increased from 8192k
-		MaxRate:            "30M",    // Increased from 20M
+		BufferSize:         "12288k",
+		MaxRate:            "30M",
 		Preset:             "superfast",
-		Tune:               "zerolatency", // Added for streaming
-		ThreadQueueSize:    "4096",        // Added to prevent underruns
+		Tune:               "zerolatency",
+		ThreadQueueSize:    "4096",
 		MaxMuxingQueueSize: "1024",
-		Threads:            "4", // Increased from 2
+		Threads:            "4",
 		Format:             "mpegts",
 	}
 }

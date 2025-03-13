@@ -100,8 +100,8 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 		InputURL:              baseURL,
 		RequestTimeout:        requestTimeout,
 		connectionActivity:    make(map[string]time.Time),
-		activityCheckInterval: 30 * time.Second, // Check every 30 seconds
-		maxInactivityDuration: 2 * time.Minute,  // Kill after 2 minutes of inactivity
+		activityCheckInterval: 30 * time.Second,    // Check every 30 seconds
+		maxInactivityDuration: 24 * 60 * 60 * 1000, // 24 hours in milliseconds (effectively disabled)
 		ctx:                   ctx,
 		stopActivityCheck:     cancel,
 
@@ -116,9 +116,6 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	if err != nil {
 		logger.Warn("Failed to fetch AC4 channels: %v", err)
 	}
-
-	// Start the activity checker goroutine
-	go t.checkInactiveConnections()
 
 	return t
 }
@@ -582,65 +579,6 @@ func (t *Transcoder) StopAllTranscoding() {
 	// Clear active streams
 	t.activeStreams = make(map[string]time.Time)
 	logger.Info("All transcoding processes stopped")
-}
-
-// checkInactiveConnections periodically checks for and cleans up inactive connections.
-func (t *Transcoder) checkInactiveConnections() {
-	ticker := time.NewTicker(t.activityCheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case <-ticker.C:
-			t.cleanupInactiveStreams()
-		}
-	}
-}
-
-// cleanupInactiveStreams identifies and removes streams that have been inactive for too long.
-func (t *Transcoder) cleanupInactiveStreams() {
-	now := time.Now()
-
-	t.activityMutex.Lock()
-	activityCopy := make(map[string]time.Time)
-	for k, v := range t.connectionActivity {
-		activityCopy[k] = v
-	}
-	t.activityMutex.Unlock()
-
-	t.mutex.Lock()
-	streamCopy := make(map[string]time.Time)
-	for k, v := range t.activeStreams {
-		streamCopy[k] = v
-	}
-	t.mutex.Unlock()
-
-	// Check for inactive streams
-	for channel, lastActivity := range activityCopy {
-		if _, isActive := streamCopy[channel]; isActive {
-			inactiveDuration := now.Sub(lastActivity)
-			if inactiveDuration > t.maxInactivityDuration {
-				logger.Warn("Detected stale connection for channel %s (inactive for %.1f seconds) - forcing cleanup",
-					channel, inactiveDuration.Seconds())
-
-				// Force cleanup
-				t.StopActiveStream(channel)
-
-				t.activityMutex.Lock()
-				delete(t.connectionActivity, channel)
-				t.activityMutex.Unlock()
-
-				logger.Info("Forced cleanup of inactive stream for channel %s", channel)
-			}
-		} else {
-			// Clean up activity tracking for channels that are no longer active
-			t.activityMutex.Lock()
-			delete(t.connectionActivity, channel)
-			t.activityMutex.Unlock()
-		}
-	}
 }
 
 // updateActivityTimestamp records the last activity time for a channel.

@@ -238,10 +238,6 @@ func TestActivityTracking(t *testing.T) {
 
 	transcoder := NewTranscoder("/path/to/ffmpeg", "192.168.1.100")
 
-	// Reduce intervals for testing
-	transcoder.activityCheckInterval = 100 * time.Millisecond
-	transcoder.maxInactivityDuration = 200 * time.Millisecond
-
 	// Add a fake activity timestamp
 	channel := "5.1"
 	transcoder.updateActivityTimestamp(channel)
@@ -255,16 +251,16 @@ func TestActivityTracking(t *testing.T) {
 		t.Error("Expected activity timestamp to be recorded")
 	}
 
-	// Wait for the cleanup to occur (should be after maxInactivityDuration)
+	// Since cleanup is disabled, timestamps should remain even after waiting
 	time.Sleep(500 * time.Millisecond)
 
-	// Verify it was cleaned up
+	// Verify it still exists
 	transcoder.activityMutex.Lock()
 	_, stillExists := transcoder.connectionActivity[channel]
 	transcoder.activityMutex.Unlock()
 
-	if stillExists {
-		t.Error("Expected activity timestamp to be removed after inactivity")
+	if !stillExists {
+		t.Error("Expected activity timestamp to remain since cleanup is disabled")
 	}
 
 	// Shutdown to stop the activity checker
