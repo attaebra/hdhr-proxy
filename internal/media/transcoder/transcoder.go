@@ -80,9 +80,9 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 
 	// Initialize the buffer manager with optimized sizes
 	bufferManager := buffer.NewManager(
-		4*1024*1024, // 4MB ring buffer for smoother playback
-		64*1024,     // 64KB read buffer chunks
-		128*1024,    // 128KB write buffer chunks
+		16*1024*1024, // 16MB ring buffer for smoother playback
+		128*1024,     // 128KB read buffer chunks
+		256*1024,     // 256KB write buffer chunks
 	)
 
 	// Create the optimized FFmpeg config

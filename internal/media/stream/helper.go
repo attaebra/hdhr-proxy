@@ -77,6 +77,38 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 	var totalCopied int64
 	var consecutiveEmptyReads int
 
+	// Pre-buffer phase - wait until buffer has some data before starting playback
+	// This helps prevent initial stuttering
+	preBufferTimeout := time.NewTimer(2 * time.Second)
+	preBufferDone := false
+
+	for !preBufferDone {
+		select {
+		case <-ctx.Done():
+			return totalCopied, ctx.Err()
+		case err := <-errCh:
+			// Source ended during pre-buffering
+			preBufferDone = true
+			if err != nil {
+				return totalCopied, err
+			}
+		case <-preBufferTimeout.C:
+			// Timeout reached, start playback anyway
+			preBufferDone = true
+		default:
+			// Check if we have enough data to start
+			bufferLength := h.BufferManager.RingBuffer.Length()
+			bufferCapacity := h.BufferManager.RingBuffer.Capacity()
+
+			// Start playback when buffer is at least 10% full or after timeout
+			if bufferLength > bufferCapacity/10 {
+				preBufferDone = true
+			} else {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -138,16 +170,29 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 				if rerr != nil && rerr != io.EOF {
 					return totalCopied, rerr
 				}
+
+				// Use a minimal sleep time when we have data
+				time.Sleep(1 * time.Millisecond)
 			} else {
 				// No data available, increment counter
 				consecutiveEmptyReads++
 
-				// If we've had too many empty reads, wait longer to prevent CPU spinning
-				if consecutiveEmptyReads > 10 {
-					time.Sleep(10 * time.Millisecond)
-				} else {
-					time.Sleep(5 * time.Millisecond)
+				// Implement an adaptive backoff strategy
+				// The more consecutive empty reads, the longer we sleep
+				// But cap it at a maximum to ensure responsiveness
+				var sleepTime time.Duration
+				switch {
+				case consecutiveEmptyReads > 20:
+					sleepTime = 20 * time.Millisecond // Max sleep time
+				case consecutiveEmptyReads > 10:
+					sleepTime = 10 * time.Millisecond
+				case consecutiveEmptyReads > 5:
+					sleepTime = 5 * time.Millisecond
+				default:
+					sleepTime = 1 * time.Millisecond // Minimum sleep
 				}
+
+				time.Sleep(sleepTime)
 			}
 		}
 	}
@@ -156,4 +201,13 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 // GetBufferStatus returns the current fill status of the ring buffer.
 func (h *Helper) GetBufferStatus() (used, capacity int) {
 	return h.BufferManager.RingBuffer.Length(), h.BufferManager.RingBuffer.Capacity()
+}
+
+// GetBufferFillPercentage returns the buffer fill level as a percentage.
+func (h *Helper) GetBufferFillPercentage() float64 {
+	used, capacity := h.GetBufferStatus()
+	if capacity == 0 {
+		return 0
+	}
+	return float64(used) / float64(capacity) * 100
 }

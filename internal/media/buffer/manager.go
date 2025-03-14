@@ -16,15 +16,19 @@ type Manager struct {
 	// Buffer sizes
 	ReadBufferSize  int
 	WriteBufferSize int
+
+	// Low buffer threshold (percentage)
+	LowBufferThreshold float64
 }
 
 // NewManager creates a new buffer manager.
 func NewManager(ringBufferSize, readBufferSize, writeBufferSize int) *Manager {
 	return &Manager{
-		RingBuffer:      ringbuffer.New(ringBufferSize),
-		BufferPool:      &bytebufferpool.Pool{},
-		ReadBufferSize:  readBufferSize,
-		WriteBufferSize: writeBufferSize,
+		RingBuffer:         ringbuffer.New(ringBufferSize),
+		BufferPool:         &bytebufferpool.Pool{},
+		ReadBufferSize:     readBufferSize,
+		WriteBufferSize:    writeBufferSize,
+		LowBufferThreshold: 0.2, // 20% threshold by default
 	}
 }
 
@@ -56,4 +60,22 @@ func (m *Manager) GetWriteBuffer() *bytebufferpool.ByteBuffer {
 func (m *Manager) ReleaseBuffer(buf *bytebufferpool.ByteBuffer) {
 	buf.Reset()
 	m.BufferPool.Put(buf)
+}
+
+// IsBufferLow checks if the buffer is running low (below threshold).
+func (m *Manager) IsBufferLow() bool {
+	length := m.RingBuffer.Length()
+	capacity := m.RingBuffer.Capacity()
+
+	// Calculate fill percentage
+	fillPercentage := float64(length) / float64(capacity)
+
+	return fillPercentage < m.LowBufferThreshold
+}
+
+// SetLowBufferThreshold sets the threshold for low buffer detection.
+func (m *Manager) SetLowBufferThreshold(threshold float64) {
+	if threshold > 0 && threshold < 1.0 {
+		m.LowBufferThreshold = threshold
+	}
 }
