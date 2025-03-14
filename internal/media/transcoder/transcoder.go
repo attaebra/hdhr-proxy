@@ -78,11 +78,11 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	// Create context for the activity checker
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Initialize the buffer manager with optimized sizes
+	// Initialize the buffer manager with optimized sizes for live TV
 	bufferManager := buffer.NewManager(
-		16*1024*1024, // 16MB ring buffer for smoother playback
-		128*1024,     // 128KB read buffer chunks
-		256*1024,     // 256KB write buffer chunks
+		8*1024*1024, // 8MB ring buffer - reduced from 16MB to prioritize fresh data
+		128*1024,    // 128KB read buffer chunks
+		256*1024,    // 256KB write buffer chunks
 	)
 
 	// Create the optimized FFmpeg config
