@@ -40,7 +40,8 @@ type Transcoder struct {
 	maxInactivityDuration time.Duration
 	activityMutex         sync.Mutex
 	stopActivityCheck     context.CancelFunc
-	ffmpegProcesses       map[int]string
+	ffmpegProcesses       map[string]int       // Map channel to PID (changed from int->string to string->int)
+	monitoringActive      bool                 // Flag to track if monitoring is active
 
 	// New fields for the improved buffer and streaming modules
 	BufferManager *buffer.Manager
@@ -80,9 +81,9 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 
 	// Initialize the buffer manager with optimized sizes for live TV
 	bufferManager := buffer.NewManager(
-		8*1024*1024, // 8MB ring buffer - reduced from 16MB to prioritize fresh data
-		128*1024,    // 128KB read buffer chunks
-		256*1024,    // 256KB write buffer chunks
+		2*1024*1024, // 2MB ring buffer - reduced from 8MB for lower latency while still smoothing jitter
+		64*1024,     // 64KB read buffer chunks - reduced from 128KB for faster response
+		128*1024,    // 128KB write buffer chunks - reduced from 256KB for better network efficiency
 	)
 
 	// Create the optimized FFmpeg config
@@ -96,14 +97,15 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 		proxy:                 hdhrProxy,
 		activeStreams:         make(map[string]time.Time),
 		ac4Channels:           make(map[string]bool),
-		ffmpegProcesses:       make(map[int]string),
+		ffmpegProcesses:       make(map[string]int), // Changed from map[int]string to map[string]int
 		InputURL:              baseURL,
 		RequestTimeout:        requestTimeout,
 		connectionActivity:    make(map[string]time.Time),
 		activityCheckInterval: 30 * time.Second,    // Check every 30 seconds
-		maxInactivityDuration: 24 * 60 * 60 * 1000, // 24 hours in milliseconds (effectively disabled)
+		maxInactivityDuration: 2 * time.Minute,     // 2 minutes of inactivity before cleanup
 		ctx:                   ctx,
 		stopActivityCheck:     cancel,
+		monitoringActive:      false,
 
 		// Initialize new modules
 		BufferManager: bufferManager,
@@ -116,6 +118,9 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	if err != nil {
 		logger.Warn("Failed to fetch AC4 channels: %v", err)
 	}
+
+	// Start the connection monitor
+	t.startConnectionMonitor()
 
 	return t
 }
@@ -301,13 +306,32 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 	// Set appropriate headers for streaming
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 
+	// Create a context that will be canceled when the client disconnects
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	
+	// Set up a goroutine to detect client disconnection
+	go func() {
+		<-clientCtx.Done()
+		logger.Debug("Client context done, cleaning up resources for channel %s", channel)
+		t.StopActiveStream(channel)
+	}()
+
+	// Make sure we cancel the client context when we're done
+	defer clientCancel()
+
 	// Use our buffered copy for smoother streaming instead of simple io.Copy
 	logger.Debug("Starting buffered stream copy from HDHomeRun to response for channel %s...", channel)
-	bytesCopied, err := t.StreamHelper.BufferedCopy(ctx, w, resp.Body)
+	bytesCopied, err := t.StreamHelper.BufferedCopyWithActivityUpdate(clientCtx, w, resp.Body, func() {
+		// Update activity timestamp whenever data is sent to the client
+		t.updateActivityTimestamp(channel)
+	})
+	
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
 			logger.Debug("Client disconnected during direct stream for channel %s: %v", channel, err)
+			// Ensure we clean up resources when the client disconnects
+			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
 		logger.Error("Error in buffered copy from HDHomeRun to response: %v", err)
@@ -588,6 +612,64 @@ func (t *Transcoder) updateActivityTimestamp(channel string) {
 	t.activityMutex.Unlock()
 }
 
+// startConnectionMonitor starts a goroutine that periodically checks for inactive connections
+func (t *Transcoder) startConnectionMonitor() {
+	t.mutex.Lock()
+	if t.monitoringActive {
+		t.mutex.Unlock()
+		return
+	}
+	t.monitoringActive = true
+	t.mutex.Unlock()
+
+	logger.Info("Starting connection monitor with check interval: %s, max inactivity: %s", 
+		t.activityCheckInterval, t.maxInactivityDuration)
+
+	go func() {
+		ticker := time.NewTicker(t.activityCheckInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				t.cleanupInactiveStreams()
+			case <-t.ctx.Done():
+				logger.Debug("Connection monitor stopped")
+				return
+			}
+		}
+	}()
+}
+
+// cleanupInactiveStreams checks for and cleans up inactive streams
+func (t *Transcoder) cleanupInactiveStreams() {
+	t.activityMutex.Lock()
+	now := time.Now()
+	inactiveChannels := []string{}
+
+	// First, identify inactive channels
+	for channel, lastActivity := range t.connectionActivity {
+		inactiveDuration := now.Sub(lastActivity)
+		if inactiveDuration > t.maxInactivityDuration {
+			logger.Info("Detected inactive stream for channel %s (inactive for %s)", 
+				channel, inactiveDuration.String())
+			inactiveChannels = append(inactiveChannels, channel)
+		}
+	}
+	t.activityMutex.Unlock()
+
+	// Then clean them up
+	for _, channel := range inactiveChannels {
+		logger.Info("Cleaning up inactive stream for channel %s", channel)
+		t.StopActiveStream(channel)
+		
+		// Also remove from activity tracking
+		t.activityMutex.Lock()
+		delete(t.connectionActivity, channel)
+		t.activityMutex.Unlock()
+	}
+}
+
 // startFFmpeg starts an FFmpeg process for transcoding with context as first parameter.
 func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Reader, channel string) error {
 	logger.Debug("Setting up ffmpeg command with path: %s", t.FFmpegPath)
@@ -639,7 +721,7 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 
 	// Store the ffmpeg process ID
 	t.mutex.Lock()
-	t.ffmpegProcesses[ffmpegPid] = channel
+	t.ffmpegProcesses[channel] = ffmpegPid // Changed to store PID by channel
 	t.mutex.Unlock()
 
 	// Set up a defer to kill the ffmpeg process if needed
@@ -650,7 +732,7 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 		}
 
 		t.mutex.Lock()
-		delete(t.ffmpegProcesses, ffmpegPid)
+		delete(t.ffmpegProcesses, channel) // Changed to delete by channel
 		t.mutex.Unlock()
 	}()
 
@@ -708,13 +790,32 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 		}
 	}()
 
+	// Create a context that will be canceled when the client disconnects
+	clientCtx, clientCancel := context.WithCancel(ctx)
+	
+	// Set up a goroutine to detect client disconnection
+	go func() {
+		<-clientCtx.Done()
+		logger.Debug("Client context done, cleaning up resources for channel %s", channel)
+		t.StopActiveStream(channel)
+	}()
+
+	// Make sure we cancel the client context when we're done
+	defer clientCancel()
+
 	// Use the stream helper for buffered copying from ffmpeg to the client
 	logger.Debug("Starting buffered stream copy from ffmpeg to response for channel %s...", channel)
-	bytesCopied, err := t.StreamHelper.BufferedCopy(ctx, w, stdout)
+	bytesCopied, err := t.StreamHelper.BufferedCopyWithActivityUpdate(clientCtx, w, stdout, func() {
+		// Update activity timestamp whenever data is sent to the client
+		t.updateActivityTimestamp(channel)
+	})
+	
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
 			logger.Debug("Client disconnected during ffmpeg to client copy for channel %s: %v", channel, err)
+			// Ensure we clean up resources when the client disconnects
+			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
 		logger.Error("Error in buffered copy from ffmpeg to response: %v", err)
@@ -741,23 +842,28 @@ func (t *Transcoder) StopActiveStream(channel string) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	// Check if the stream is still active
+	_, streamActive := t.activeStreams[channel]
+	if !streamActive {
+		// Stream already stopped
+		return
+	}
+
 	// Remove the active stream
 	delete(t.activeStreams, channel)
 
 	// Look for any ffmpeg processes for this channel and stop them
-	for pid, ch := range t.ffmpegProcesses {
-		if ch == channel {
-			logger.Debug("Killing ffmpeg process with PID: %d for channel %s", pid, channel)
-			process, err := os.FindProcess(pid)
-			if err == nil {
-				if killErr := process.Kill(); killErr != nil {
-					logger.Error("Error killing ffmpeg process: %v", killErr)
-				} else {
-					logger.Debug("Successfully killed ffmpeg process with PID: %d", pid)
-				}
+	if pid, exists := t.ffmpegProcesses[channel]; exists {
+		logger.Debug("Killing ffmpeg process with PID: %d for channel %s", pid, channel)
+		process, err := os.FindProcess(pid)
+		if err == nil {
+			if killErr := process.Kill(); killErr != nil {
+				logger.Error("Error killing ffmpeg process: %v", killErr)
+			} else {
+				logger.Debug("Successfully killed ffmpeg process with PID: %d", pid)
 			}
-			delete(t.ffmpegProcesses, pid)
 		}
+		delete(t.ffmpegProcesses, channel)
 	}
 
 	logger.Info("Stopped active stream for channel %s", channel)

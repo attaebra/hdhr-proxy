@@ -34,12 +34,12 @@ func NewOptimizedConfig() *Config {
 		AudioCodec:         "eac3",
 		AudioBitrate:       "384k",
 		AudioChannels:      "2",
-		BufferSize:         "12288k",
+		BufferSize:         "2048k",
 		MaxRate:            "30M",
 		Preset:             "superfast",
 		Tune:               "zerolatency",
-		ThreadQueueSize:    "4096",
-		MaxMuxingQueueSize: "1024",
+		ThreadQueueSize:    "512",
+		MaxMuxingQueueSize: "256",
 		Threads:            "4",
 		Format:             "mpegts",
 	}
@@ -48,6 +48,9 @@ func NewOptimizedConfig() *Config {
 // BuildArgs constructs command line arguments for FFmpeg.
 func (c *Config) BuildArgs() []string {
 	return []string{
+		"-fflags", "+flush_packets",        // Flush packets immediately for real-time streaming
+		"-flush_packets", "1",              // Enable packet flushing
+		"-max_delay", "0",                  // Minimize delay for live streaming
 		"-thread_queue_size", c.ThreadQueueSize,
 		"-i", c.InputSource,
 		"-c:v", c.VideoCodec,

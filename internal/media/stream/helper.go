@@ -82,13 +82,11 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 
 	// Read from ring buffer and write to destination
 	var totalCopied int64
-	var consecutiveEmptyReads int
 
-	// Pre-buffer phase - wait until buffer has some data before starting playback
-	// Skip pre-buffering in test mode
+	// Minimal pre-buffering - just ensure some data is present
+	// Skip pre-buffering in test mode or use very minimal buffering
 	if !h.TestMode {
-		// This helps prevent initial stuttering, but we keep it short for live TV
-		preBufferTimeout := time.NewTimer(100 * time.Millisecond) // Very short timeout for tests
+		preBufferTimeout := time.NewTimer(20 * time.Millisecond) // Reduced from 100ms to 20ms
 		preBufferDone := false
 
 		for !preBufferDone {
@@ -105,24 +103,23 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 				// Timeout reached, start playback anyway
 				preBufferDone = true
 			default:
-				// Check if we have enough data to start
+				// Check if we have minimal data to start
 				bufferLength := h.BufferManager.RingBuffer.Length()
 				bufferCapacity := h.BufferManager.RingBuffer.Capacity()
 
-				// For small buffers (like in tests), use a smaller threshold
-				// For larger buffers (like in production), use 5% threshold
+				// Use much smaller threshold - just need some data present
 				var threshold int
 				if bufferCapacity < 1024 { // Small buffer (test environment)
 					threshold = 1 // Just need some data
 				} else {
-					threshold = bufferCapacity / 20 // 5% for production
+					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller
+					threshold = min(32*1024, bufferCapacity/100)
 				}
 
 				if bufferLength > threshold {
 					preBufferDone = true
-				} else {
-					time.Sleep(1 * time.Millisecond) // Very short sleep for tests
 				}
+				// No sleep here - immediately recheck
 			}
 		}
 	}
@@ -163,9 +160,6 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 		default:
 			// Get data from ring buffer if available
 			if h.BufferManager.RingBuffer.Length() > 0 {
-				// Reset counter since we have data
-				consecutiveEmptyReads = 0
-
 				// Get a write buffer
 				writeBuf := h.BufferManager.GetWriteBuffer()
 
@@ -189,55 +183,215 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 					return totalCopied, rerr
 				}
 
-				// Use a minimal sleep time when we have data
-				if !h.TestMode {
-					// For tests with small buffers, use a very short sleep
-					if h.BufferManager.RingBuffer.Capacity() < 1024 {
-						time.Sleep(100 * time.Microsecond) // 0.1ms for tests
-					} else {
-						time.Sleep(1 * time.Millisecond) // 1ms for production
+				// NO SLEEP when data is available - immediately check for more data
+			} else {
+				// No data available - yield CPU briefly but don't introduce significant delay
+				select {
+				case <-ctx.Done():
+					return totalCopied, ctx.Err()
+				default:
+					// Brief yield to prevent tight loop from consuming 100% CPU
+					// but avoid fixed sleep delays that cause stuttering
+					time.Sleep(10 * time.Microsecond) // Minimal 0.01ms yield
+				}
+			}
+		}
+	}
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// BufferedCopyWithActivityUpdate performs copying with a ring buffer for smoother streaming
+// and calls the provided activity callback whenever data is written to the destination.
+func (h *Helper) BufferedCopyWithActivityUpdate(ctx context.Context, dst io.Writer, src io.Reader, activityCallback func()) (int64, error) {
+	// Reset the ring buffer to ensure it's clean
+	h.BufferManager.RingBuffer.Reset()
+
+	// Create channels for communication
+	errCh := make(chan error, 1)
+	doneCh := make(chan struct{})
+
+	// Create a context that can be canceled when done
+	bufferCtx, cancelBuffer := context.WithCancel(ctx)
+	defer cancelBuffer()
+
+	// Start filling the ring buffer from the source
+	go func() {
+		defer close(doneCh)
+
+		for {
+			select {
+			case <-bufferCtx.Done():
+				return
+			default:
+				// Get a buffer from the pool
+				readBuf := h.BufferManager.GetReadBuffer()
+
+				// Read from source
+				n, err := src.Read(readBuf.B)
+				if n > 0 {
+					// Write to ring buffer
+					_, werr := h.BufferManager.RingBuffer.Write(readBuf.B[:n])
+					if werr != nil {
+						h.BufferManager.ReleaseBuffer(readBuf)
+						errCh <- werr
+						return
 					}
 				}
-			} else {
-				// No data available, increment counter
-				consecutiveEmptyReads++
 
-				// For live TV, we want to be more aggressive about getting fresh data
-				// So we use shorter sleep times to check more frequently
-				if !h.TestMode {
-					var sleepTime time.Duration
+				// Release the buffer back to the pool
+				h.BufferManager.ReleaseBuffer(readBuf)
 
-					// Adjust sleep times based on buffer capacity (for tests vs production)
-					if h.BufferManager.RingBuffer.Capacity() < 1024 {
-						// Test environment with small buffers
-						switch {
-						case consecutiveEmptyReads > 20:
-							sleepTime = 1 * time.Millisecond
-						case consecutiveEmptyReads > 10:
-							sleepTime = 500 * time.Microsecond
-						case consecutiveEmptyReads > 5:
-							sleepTime = 200 * time.Microsecond
-						default:
-							sleepTime = 100 * time.Microsecond
-						}
+				// Handle EOF or errors
+				if err != nil {
+					if err != io.EOF {
+						errCh <- err
 					} else {
-						// Production environment with larger buffers
-						switch {
-						case consecutiveEmptyReads > 20:
-							sleepTime = 10 * time.Millisecond
-						case consecutiveEmptyReads > 10:
-							sleepTime = 5 * time.Millisecond
-						case consecutiveEmptyReads > 5:
-							sleepTime = 2 * time.Millisecond
-						default:
-							sleepTime = 1 * time.Millisecond
-						}
+						errCh <- nil // EOF is not an error
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// Read from ring buffer and write to destination
+	var totalCopied int64
+
+	// Minimal pre-buffering - just ensure some data is present
+	// Skip pre-buffering in test mode or use very minimal buffering
+	if !h.TestMode {
+		preBufferTimeout := time.NewTimer(20 * time.Millisecond) // Reduced from 100ms to 20ms
+		preBufferDone := false
+
+		for !preBufferDone {
+			select {
+			case <-ctx.Done():
+				return totalCopied, ctx.Err()
+			case err := <-errCh:
+				// Source ended during pre-buffering
+				preBufferDone = true
+				if err != nil {
+					return totalCopied, err
+				}
+			case <-preBufferTimeout.C:
+				// Timeout reached, start playback anyway
+				preBufferDone = true
+			default:
+				// Check if we have minimal data to start
+				bufferLength := h.BufferManager.RingBuffer.Length()
+				bufferCapacity := h.BufferManager.RingBuffer.Capacity()
+
+				// Use much smaller threshold - just need some data present
+				var threshold int
+				if bufferCapacity < 1024 { // Small buffer (test environment)
+					threshold = 1 // Just need some data
+				} else {
+					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller
+					threshold = min(32*1024, bufferCapacity/100)
+				}
+
+				if bufferLength > threshold {
+					preBufferDone = true
+				}
+				// No sleep here - immediately recheck
+			}
+		}
+	}
+
+	// Track when we last called the activity callback to avoid calling it too frequently
+	lastActivityUpdate := time.Now()
+	activityUpdateInterval := 5 * time.Second // Update activity every 5 seconds
+
+	for {
+		select {
+		case <-ctx.Done():
+			return totalCopied, ctx.Err()
+
+		case err := <-errCh:
+			// Source is done, but we still need to drain the buffer
+			for h.BufferManager.RingBuffer.Length() > 0 {
+				// Get a write buffer
+				writeBuf := h.BufferManager.GetWriteBuffer()
+
+				// Read from ring buffer
+				n, rerr := h.BufferManager.RingBuffer.Read(writeBuf.B)
+				if n > 0 {
+					// Write to destination
+					nw, werr := dst.Write(writeBuf.B[:n])
+					totalCopied += int64(nw)
+
+					// Call activity callback if enough time has passed
+					now := time.Now()
+					if now.Sub(lastActivityUpdate) >= activityUpdateInterval {
+						activityCallback()
+						lastActivityUpdate = now
 					}
 
-					time.Sleep(sleepTime)
-				} else {
-					// In test mode, use minimal sleep to avoid test timeouts
-					time.Sleep(10 * time.Microsecond) // 0.01ms for tests
+					if werr != nil {
+						h.BufferManager.ReleaseBuffer(writeBuf)
+						return totalCopied, werr
+					}
+				}
+
+				// Release the buffer back to the pool
+				h.BufferManager.ReleaseBuffer(writeBuf)
+
+				if rerr != nil {
+					break
+				}
+			}
+			return totalCopied, err
+
+		default:
+			// Get data from ring buffer if available
+			if h.BufferManager.RingBuffer.Length() > 0 {
+				// Get a write buffer
+				writeBuf := h.BufferManager.GetWriteBuffer()
+
+				// Read from ring buffer
+				n, rerr := h.BufferManager.RingBuffer.Read(writeBuf.B)
+				if n > 0 {
+					// Write to destination
+					nw, werr := dst.Write(writeBuf.B[:n])
+					totalCopied += int64(nw)
+
+					// Call activity callback if enough time has passed
+					now := time.Now()
+					if now.Sub(lastActivityUpdate) >= activityUpdateInterval {
+						activityCallback()
+						lastActivityUpdate = now
+					}
+
+					if werr != nil {
+						h.BufferManager.ReleaseBuffer(writeBuf)
+						return totalCopied, werr
+					}
+				}
+
+				// Release the buffer back to the pool
+				h.BufferManager.ReleaseBuffer(writeBuf)
+
+				if rerr != nil && rerr != io.EOF {
+					return totalCopied, rerr
+				}
+
+				// NO SLEEP when data is available - immediately check for more data
+			} else {
+				// No data available - yield CPU briefly but don't introduce significant delay
+				select {
+				case <-ctx.Done():
+					return totalCopied, ctx.Err()
+				default:
+					// Brief yield to prevent tight loop from consuming 100% CPU
+					// but avoid fixed sleep delays that cause stuttering
+					time.Sleep(10 * time.Microsecond) // Minimal 0.01ms yield
 				}
 			}
 		}

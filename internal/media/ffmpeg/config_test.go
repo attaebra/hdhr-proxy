@@ -16,12 +16,12 @@ func TestNewOptimizedConfig(t *testing.T) {
 		"AudioCodec":         "eac3",
 		"AudioBitrate":       "384k",
 		"AudioChannels":      "2",
-		"BufferSize":         "12288k",
+		"BufferSize":         "2048k",
 		"MaxRate":            "30M",
 		"Preset":             "superfast",
 		"Tune":               "zerolatency",
-		"ThreadQueueSize":    "4096",
-		"MaxMuxingQueueSize": "1024",
+		"ThreadQueueSize":    "512",
+		"MaxMuxingQueueSize": "256",
 		"Threads":            "4",
 		"Format":             "mpegts",
 	}
@@ -93,17 +93,20 @@ func TestBuildArgs(t *testing.T) {
 
 	// Count the actual parameters
 	expectedParameters := []string{
-		"-thread_queue_size", "4096",
+		"-fflags", "+flush_packets",
+		"-flush_packets", "1",
+		"-max_delay", "0",
+		"-thread_queue_size", "512",
 		"-i", "pipe:0",
 		"-c:v", "copy",
 		"-c:a", "eac3",
 		"-b:a", "384k",
 		"-ac", "2",
-		"-bufsize", "12288k",
+		"-bufsize", "2048k",
 		"-maxrate", "30M",
 		"-preset", "superfast",
 		"-tune", "zerolatency",
-		"-max_muxing_queue_size", "1024",
+		"-max_muxing_queue_size", "256",
 		"-threads", "4",
 		"-f", "mpegts",
 		"pipe:1",
@@ -115,12 +118,16 @@ func TestBuildArgs(t *testing.T) {
 	}
 
 	// Verify key parameters are present and in the right order
-	if args[0] != "-thread_queue_size" || args[1] != "4096" {
-		t.Errorf("Expected first parameter to be -thread_queue_size 4096, got %s %s", args[0], args[1])
+	if args[0] != "-fflags" || args[1] != "+flush_packets" {
+		t.Errorf("Expected first parameter to be -fflags +flush_packets, got %s %s", args[0], args[1])
 	}
 
-	if args[2] != "-i" || args[3] != "pipe:0" {
-		t.Errorf("Expected input parameter to be -i pipe:0, got %s %s", args[2], args[3])
+	if args[6] != "-thread_queue_size" || args[7] != "512" {
+		t.Errorf("Expected thread_queue_size parameter to be -thread_queue_size 512, got %s %s", args[6], args[7])
+	}
+
+	if args[8] != "-i" || args[9] != "pipe:0" {
+		t.Errorf("Expected input parameter to be -i pipe:0, got %s %s", args[8], args[9])
 	}
 
 	// Check for specific optimization parameters
