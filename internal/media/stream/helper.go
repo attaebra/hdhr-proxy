@@ -107,13 +107,17 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 				bufferLength := h.BufferManager.RingBuffer.Length()
 				bufferCapacity := h.BufferManager.RingBuffer.Capacity()
 
-				// Use much smaller threshold - just need some data present
+				// Use much smaller threshold - just need some data present.
 				var threshold int
 				if bufferCapacity < 1024 { // Small buffer (test environment)
 					threshold = 1 // Just need some data
 				} else {
-					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller
-					threshold = min(32*1024, bufferCapacity/100)
+					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller.
+					if 32*1024 < bufferCapacity/100 {
+						threshold = 32 * 1024
+					} else {
+						threshold = bufferCapacity / 100
+					}
 				}
 
 				if bufferLength > threshold {
@@ -199,14 +203,6 @@ func (h *Helper) BufferedCopy(ctx context.Context, dst io.Writer, src io.Reader)
 	}
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // BufferedCopyWithActivityUpdate performs copying with a ring buffer for smoother streaming
 // and calls the provided activity callback whenever data is written to the destination.
 func (h *Helper) BufferedCopyWithActivityUpdate(ctx context.Context, dst io.Writer, src io.Reader, activityCallback func()) (int64, error) {
@@ -288,13 +284,17 @@ func (h *Helper) BufferedCopyWithActivityUpdate(ctx context.Context, dst io.Writ
 				bufferLength := h.BufferManager.RingBuffer.Length()
 				bufferCapacity := h.BufferManager.RingBuffer.Capacity()
 
-				// Use much smaller threshold - just need some data present
+				// Use much smaller threshold - just need some data present.
 				var threshold int
 				if bufferCapacity < 1024 { // Small buffer (test environment)
 					threshold = 1 // Just need some data
 				} else {
-					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller
-					threshold = min(32*1024, bufferCapacity/100)
+					// Minimal buffering: 32KB or 1% of capacity, whichever is smaller.
+					if 32*1024 < bufferCapacity/100 {
+						threshold = 32 * 1024
+					} else {
+						threshold = bufferCapacity / 100
+					}
 				}
 
 				if bufferLength > threshold {

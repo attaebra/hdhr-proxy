@@ -40,8 +40,8 @@ type Transcoder struct {
 	maxInactivityDuration time.Duration
 	activityMutex         sync.Mutex
 	stopActivityCheck     context.CancelFunc
-	ffmpegProcesses       map[string]int       // Map channel to PID (changed from int->string to string->int)
-	monitoringActive      bool                 // Flag to track if monitoring is active
+	ffmpegProcesses       map[string]int // Map channel to PID (changed from int->string to string->int)
+	monitoringActive      bool           // Flag to track if monitoring is active
 
 	// New fields for the improved buffer and streaming modules
 	BufferManager *buffer.Manager
@@ -101,8 +101,8 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 		InputURL:              baseURL,
 		RequestTimeout:        requestTimeout,
 		connectionActivity:    make(map[string]time.Time),
-		activityCheckInterval: 30 * time.Second,    // Check every 30 seconds
-		maxInactivityDuration: 2 * time.Minute,     // 2 minutes of inactivity before cleanup
+		activityCheckInterval: 30 * time.Second, // Check every 30 seconds
+		maxInactivityDuration: 2 * time.Minute,  // 2 minutes of inactivity before cleanup
 		ctx:                   ctx,
 		stopActivityCheck:     cancel,
 		monitoringActive:      false,
@@ -308,7 +308,7 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 
 	// Create a context that will be canceled when the client disconnects
 	clientCtx, clientCancel := context.WithCancel(ctx)
-	
+
 	// Set up a goroutine to detect client disconnection
 	go func() {
 		<-clientCtx.Done()
@@ -325,7 +325,7 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
 	})
-	
+
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
@@ -612,7 +612,7 @@ func (t *Transcoder) updateActivityTimestamp(channel string) {
 	t.activityMutex.Unlock()
 }
 
-// startConnectionMonitor starts a goroutine that periodically checks for inactive connections
+// startConnectionMonitor starts a goroutine that periodically checks for inactive connections.
 func (t *Transcoder) startConnectionMonitor() {
 	t.mutex.Lock()
 	if t.monitoringActive {
@@ -622,7 +622,7 @@ func (t *Transcoder) startConnectionMonitor() {
 	t.monitoringActive = true
 	t.mutex.Unlock()
 
-	logger.Info("Starting connection monitor with check interval: %s, max inactivity: %s", 
+	logger.Info("Starting connection monitor with check interval: %s, max inactivity: %s",
 		t.activityCheckInterval, t.maxInactivityDuration)
 
 	go func() {
@@ -641,7 +641,7 @@ func (t *Transcoder) startConnectionMonitor() {
 	}()
 }
 
-// cleanupInactiveStreams checks for and cleans up inactive streams
+// cleanupInactiveStreams checks for and cleans up inactive streams.
 func (t *Transcoder) cleanupInactiveStreams() {
 	t.activityMutex.Lock()
 	now := time.Now()
@@ -651,7 +651,7 @@ func (t *Transcoder) cleanupInactiveStreams() {
 	for channel, lastActivity := range t.connectionActivity {
 		inactiveDuration := now.Sub(lastActivity)
 		if inactiveDuration > t.maxInactivityDuration {
-			logger.Info("Detected inactive stream for channel %s (inactive for %s)", 
+			logger.Info("Detected inactive stream for channel %s (inactive for %s)",
 				channel, inactiveDuration.String())
 			inactiveChannels = append(inactiveChannels, channel)
 		}
@@ -662,7 +662,7 @@ func (t *Transcoder) cleanupInactiveStreams() {
 	for _, channel := range inactiveChannels {
 		logger.Info("Cleaning up inactive stream for channel %s", channel)
 		t.StopActiveStream(channel)
-		
+
 		// Also remove from activity tracking
 		t.activityMutex.Lock()
 		delete(t.connectionActivity, channel)
@@ -792,7 +792,7 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 
 	// Create a context that will be canceled when the client disconnects
 	clientCtx, clientCancel := context.WithCancel(ctx)
-	
+
 	// Set up a goroutine to detect client disconnection
 	go func() {
 		<-clientCtx.Done()
@@ -809,7 +809,7 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
 	})
-	
+
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {

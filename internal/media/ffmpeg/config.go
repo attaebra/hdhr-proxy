@@ -48,9 +48,9 @@ func NewOptimizedConfig() *Config {
 // BuildArgs constructs command line arguments for FFmpeg.
 func (c *Config) BuildArgs() []string {
 	return []string{
-		"-fflags", "+flush_packets",        // Flush packets immediately for real-time streaming
-		"-flush_packets", "1",              // Enable packet flushing
-		"-max_delay", "0",                  // Minimize delay for live streaming
+		"-fflags", "+flush_packets", // Flush packets immediately for real-time streaming
+		"-flush_packets", "1", // Enable packet flushing
+		"-max_delay", "0", // Minimize delay for live streaming
 		"-thread_queue_size", c.ThreadQueueSize,
 		"-i", c.InputSource,
 		"-c:v", c.VideoCodec,
