@@ -5,13 +5,64 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/attaebra/hdhr-proxy/internal/constants"
+	"github.com/attaebra/hdhr-proxy/internal/interfaces"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
 )
+
+// HTTPClientWrapper wraps http.Client to implement our interfaces.HTTPClient interface.
+type HTTPClientWrapper struct {
+	*http.Client
+}
+
+// Ensure HTTPClientWrapper implements the HTTPClient interface.
+var _ interfaces.HTTPClient = (*HTTPClientWrapper)(nil)
+
+// HTTPClient creates a high-performance HTTP client with connection pooling.
+func HTTPClient(timeout time.Duration) interfaces.HTTPClient {
+	transport := &http.Transport{
+		// Connection pooling settings
+		MaxIdleConns:        100,              // Maximum idle connections across all hosts
+		MaxIdleConnsPerHost: 10,               // Maximum idle connections per host
+		MaxConnsPerHost:     50,               // Maximum connections per host
+		IdleConnTimeout:     90 * time.Second, // How long idle connections stay alive
+
+		// Connection timing settings
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,  // Connection timeout
+			KeepAlive: 30 * time.Second, // Keep-alive probe interval
+		}).DialContext,
+
+		// Response timing settings
+		ResponseHeaderTimeout: 10 * time.Second, // Time to wait for response headers
+		ExpectContinueTimeout: 1 * time.Second,  // Time to wait for 100-continue response
+
+		// Disable compression for streaming to reduce CPU overhead
+		DisableCompression: true,
+
+		// Force HTTP/1.1 for better compatibility with HDHomeRun devices
+		ForceAttemptHTTP2: false,
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout, // Overall request timeout (0 means no timeout for streaming)
+	}
+
+	logger.Debug("Created optimized HTTP client with timeout: %v", timeout)
+	return &HTTPClientWrapper{Client: client}
+}
+
+// HTTPClientWithTimeout creates a client with custom timeout using the same optimized transport.
+func HTTPClientWithTimeout(timeout time.Duration) interfaces.HTTPClient {
+	// Use the same transport configuration as HTTPClient
+	return HTTPClient(timeout)
+}
 
 // BuildAPIURL constructs a URL for API endpoints with the appropriate port.
 func BuildAPIURL(host, path string) string {

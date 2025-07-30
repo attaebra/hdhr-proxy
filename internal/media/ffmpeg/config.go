@@ -1,5 +1,7 @@
 package ffmpeg
 
+import "github.com/attaebra/hdhr-proxy/internal/interfaces"
+
 // Config contains optimized FFmpeg parameters.
 type Config struct {
 	// Input/output configuration
@@ -25,6 +27,9 @@ type Config struct {
 	Format             string
 }
 
+// Ensure Config implements the FFmpegConfig interface.
+var _ interfaces.FFmpegConfig = (*Config)(nil)
+
 // NewOptimizedConfig returns an optimized configuration for streaming.
 func NewOptimizedConfig() *Config {
 	return &Config{
@@ -43,6 +48,26 @@ func NewOptimizedConfig() *Config {
 		Threads:            "4",
 		Format:             "mpegts",
 	}
+}
+
+// SetPreset sets the FFmpeg preset.
+func (c *Config) SetPreset(preset string) {
+	c.Preset = preset
+}
+
+// SetTune sets the FFmpeg tune option.
+func (c *Config) SetTune(tune string) {
+	c.Tune = tune
+}
+
+// SetAudioBitrate sets the audio bitrate.
+func (c *Config) SetAudioBitrate(bitrate string) {
+	c.AudioBitrate = bitrate
+}
+
+// SetAudioChannels sets the number of audio channels.
+func (c *Config) SetAudioChannels(channels string) {
+	c.AudioChannels = channels
 }
 
 // BuildArgs constructs command line arguments for FFmpeg.

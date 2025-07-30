@@ -14,17 +14,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/attaebra/hdhr-proxy/internal/config"
 	"github.com/attaebra/hdhr-proxy/internal/constants"
+	"github.com/attaebra/hdhr-proxy/internal/interfaces"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
-	"github.com/attaebra/hdhr-proxy/internal/media/buffer"
+
 	"github.com/attaebra/hdhr-proxy/internal/media/ffmpeg"
 	"github.com/attaebra/hdhr-proxy/internal/media/stream"
 	"github.com/attaebra/hdhr-proxy/internal/proxy"
 	"github.com/attaebra/hdhr-proxy/internal/utils"
 )
 
-// Transcoder manages the FFmpeg process for transcoding AC4 to EAC3.
-type Transcoder struct {
+// Dependencies holds all dependencies needed for transcoder initialization.
+type Dependencies struct {
+	Config            *config.Config
+	HTTPClient        interfaces.HTTPClient
+	StreamClient      interfaces.HTTPClient
+	FFmpegConfig      interfaces.FFmpegConfig
+	StreamHelper      interfaces.StreamHelper
+	HDHRProxy         interfaces.HDHRProxy
+	SecurityValidator interfaces.SecurityValidator
+}
+
+// Impl manages the FFmpeg process for transcoding AC4 to EAC3.
+type Impl struct {
 	FFmpegPath            string
 	InputURL              string
 	ctx                   context.Context
@@ -33,7 +46,7 @@ type Transcoder struct {
 	mutex                 sync.Mutex
 	activeStreams         map[string]time.Time // Track active streams by channel ID
 	RequestTimeout        time.Duration        // HTTP request timeout
-	proxy                 *proxy.HDHRProxy     // Reference to the proxy for API access
+	proxy                 interfaces.HDHRProxy // Reference to the proxy for API access
 	ac4Channels           map[string]bool      // Track which channels have AC4 audio
 	connectionActivity    map[string]time.Time
 	activityCheckInterval time.Duration
@@ -44,13 +57,22 @@ type Transcoder struct {
 	monitoringActive      bool           // Flag to track if monitoring is active
 
 	// New fields for the improved buffer and streaming modules
-	BufferManager *buffer.Manager
-	FFmpegConfig  *ffmpeg.Config
-	StreamHelper  *stream.Helper
+	FFmpegConfig interfaces.FFmpegConfig
+	StreamHelper interfaces.StreamHelper
+
+	// Optimized HTTP clients
+	apiClient    interfaces.HTTPClient // For API requests with timeouts
+	streamClient interfaces.HTTPClient // For streaming with no timeout
+
+	// Security validator
+	securityValidator interfaces.SecurityValidator
 }
 
+// Ensure Impl implements the Transcoder interface.
+var _ interfaces.Transcoder = (*Impl)(nil)
+
 // NewTranscoder creates a new transcoder instance.
-func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
+func NewTranscoder(ffmpegPath string, hdhrIP string) *Impl {
 	// Ensure the input URL is correctly formatted
 	baseURL := fmt.Sprintf("http://%s:%d", hdhrIP, constants.DefaultMediaPort)
 	logger.Debug("Using streaming base URL: %s", baseURL)
@@ -79,20 +101,17 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	// Create context for the activity checker
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Initialize the buffer manager with optimized sizes for live TV
-	bufferManager := buffer.NewManager(
-		2*1024*1024, // 2MB ring buffer - reduced from 8MB for lower latency while still smoothing jitter
-		64*1024,     // 64KB read buffer chunks - reduced from 128KB for faster response
-		128*1024,    // 128KB write buffer chunks - reduced from 256KB for better network efficiency
-	)
-
 	// Create the optimized FFmpeg config
 	ffmpegConfig := ffmpeg.NewOptimizedConfig()
 
 	// Create stream helper
-	streamHelper := stream.NewHelper(bufferManager)
+	streamHelper := stream.NewHelper()
 
-	t := &Transcoder{
+	// Create optimized HTTP clients
+	apiClient := utils.HTTPClient(5 * time.Second) // Short timeout for API requests
+	streamClient := utils.HTTPClient(0)            // No timeout for streaming
+
+	t := &Impl{
 		FFmpegPath:            ffmpegPath,
 		proxy:                 hdhrProxy,
 		activeStreams:         make(map[string]time.Time),
@@ -108,9 +127,12 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 		monitoringActive:      false,
 
 		// Initialize new modules
-		BufferManager: bufferManager,
-		FFmpegConfig:  ffmpegConfig,
-		StreamHelper:  streamHelper,
+		FFmpegConfig: ffmpegConfig,
+		StreamHelper: streamHelper,
+
+		// Initialize optimized HTTP clients
+		apiClient:    apiClient,
+		streamClient: streamClient,
 	}
 
 	// Fetch the channel lineup to identify AC4 channels
@@ -125,27 +147,71 @@ func NewTranscoder(ffmpegPath string, hdhrIP string) *Transcoder {
 	return t
 }
 
-// fetchAC4Channels fetches the lineup from the HDHomeRun and identifies channels with AC4 audio.
-func (t *Transcoder) fetchAC4Channels() error {
-	defer utils.TimeOperation("Fetch AC4 channels")()
-
-	// Create an HTTP client
-	client := &http.Client{
-		Timeout: 5 * time.Second, // Add a reasonable timeout for API requests
+// Transcoder creates a new transcoder instance with injected dependencies.
+func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
+	// Validate FFmpeg path
+	if err := deps.SecurityValidator.ValidateExecutable(deps.Config.FFmpegPath); err != nil {
+		return nil, fmt.Errorf("invalid FFmpeg path: %w", err)
 	}
 
+	// Create context for the activity checker
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Ensure the input URL is correctly formatted
+	baseURL := fmt.Sprintf("http://%s:%d", deps.Config.HDHomeRunIP, deps.Config.MediaPort)
+	logger.Debug("Using streaming base URL: %s", baseURL)
+
+	t := &Impl{
+		FFmpegPath:            deps.Config.FFmpegPath,
+		proxy:                 deps.HDHRProxy,
+		activeStreams:         make(map[string]time.Time),
+		ac4Channels:           make(map[string]bool),
+		ffmpegProcesses:       make(map[string]int),
+		InputURL:              baseURL,
+		RequestTimeout:        deps.Config.RequestTimeout,
+		connectionActivity:    make(map[string]time.Time),
+		activityCheckInterval: deps.Config.ActivityCheckInterval,
+		maxInactivityDuration: deps.Config.MaxInactivityDuration,
+		ctx:                   ctx,
+		stopActivityCheck:     cancel,
+		monitoringActive:      false,
+
+		// Initialize injected dependencies
+		FFmpegConfig:      deps.FFmpegConfig,
+		StreamHelper:      deps.StreamHelper,
+		apiClient:         deps.HTTPClient,
+		streamClient:      deps.StreamClient,
+		securityValidator: deps.SecurityValidator,
+	}
+
+	// Fetch the channel lineup to identify AC4 channels
+	err := t.fetchAC4Channels()
+	if err != nil {
+		logger.Warn("Failed to fetch AC4 channels: %v", err)
+	}
+
+	// Start the connection monitor
+	t.startConnectionMonitor()
+
+	return t, nil
+}
+
+// fetchAC4Channels fetches the lineup from the HDHomeRun and identifies channels with AC4 audio.
+func (t *Impl) fetchAC4Channels() error {
+	defer utils.TimeOperation("Fetch AC4 channels")()
+
 	// Create the request
-	req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/lineup.json", t.proxy.HDHRIP), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/lineup.json", t.proxy.GetHDHRIP()), nil)
 	if err != nil {
 		return utils.LogAndWrapError(err, "failed to create request")
 	}
 
-	logger.Debug("Fetching lineup from %s", t.proxy.HDHRIP)
+	logger.Debug("Fetching lineup from %s", t.proxy.GetHDHRIP())
 
-	// Execute the request
-	resp, err := client.Do(req)
+	// Execute the request using the optimized API client
+	resp, err := t.apiClient.Do(req)
 	if err != nil {
-		return utils.LogAndWrapError(err, "failed to fetch lineup from %s", t.proxy.HDHRIP)
+		return utils.LogAndWrapError(err, "failed to fetch lineup from %s", t.proxy.GetHDHRIP())
 	}
 	defer utils.CloseWithLogging(resp.Body, "response body")
 
@@ -204,7 +270,7 @@ func getDefaultString(input, defaultVal string) string {
 }
 
 // isAC4Channel checks if a channel uses AC4 audio codec.
-func (t *Transcoder) isAC4Channel(channel string) bool {
+func (t *Impl) isAC4Channel(channel string) bool {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -218,7 +284,7 @@ func (t *Transcoder) isAC4Channel(channel string) bool {
 }
 
 // DirectStreamChannel streams the channel directly without transcoding.
-func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error {
+func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error {
 	start := time.Now()
 
 	// Track this stream in our active streams
@@ -254,14 +320,16 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 	}()
 
 	// Create an HTTP client to fetch the stream
-	client := &http.Client{}
+	// Use the optimized stream client (no timeout for streaming)
+	client := t.streamClient
 
-	// Only set timeout if greater than 0
+	// Override timeout if RequestTimeout is configured
 	if t.RequestTimeout > 0 {
-		client.Timeout = t.RequestTimeout
-		logger.Debug("Using HTTP client timeout: %s", t.RequestTimeout)
+		// Create a new client with custom timeout using the same optimized settings
+		client = utils.HTTPClientWithTimeout(t.RequestTimeout)
+		logger.Debug("Using custom HTTP client timeout: %s", t.RequestTimeout)
 	} else {
-		logger.Debug("No timeout set for HTTP client, stream will continue until closed")
+		logger.Debug("Using streaming client with no timeout, stream will continue until closed")
 	}
 
 	// Create the request
@@ -319,9 +387,9 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 	// Make sure we cancel the client context when we're done
 	defer clientCancel()
 
-	// Use our buffered copy for smoother streaming instead of simple io.Copy
-	logger.Debug("Starting buffered stream copy from HDHomeRun to response for channel %s...", channel)
-	bytesCopied, err := t.StreamHelper.BufferedCopyWithActivityUpdate(clientCtx, w, resp.Body, func() {
+	// Use our stream copy instead of simple io.Copy
+	logger.Debug("Starting stream copy from HDHomeRun to response for channel %s...", channel)
+	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(clientCtx, w, resp.Body, func() {
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
 	})
@@ -334,20 +402,17 @@ func (t *Transcoder) DirectStreamChannel(w http.ResponseWriter, r *http.Request,
 			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error in buffered copy from HDHomeRun to response: %v", err)
+		logger.Error("Error in stream copy from HDHomeRun to response: %v", err)
 		return fmt.Errorf("stream interrupted: %w", err)
 	}
 
-	// Log buffer stats for debugging
-	used, capacity := t.StreamHelper.GetBufferStatus()
-	logger.Debug("Finished direct stream copy, bytes copied: %d, final buffer status: %d/%d bytes",
-		bytesCopied, used, capacity)
+	logger.Debug("Finished direct stream copy, bytes copied: %d", bytesCopied)
 
 	return nil
 }
 
 // TranscodeChannel starts the ffmpeg process to transcode from AC4 to EAC3.
-func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, channel string) error {
+func (t *Impl) TranscodeChannel(w http.ResponseWriter, r *http.Request, channel string) error {
 	defer utils.TimeOperation(fmt.Sprintf("Transcoding channel %s", channel))()
 
 	start := time.Now()
@@ -385,14 +450,16 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, ch
 	}()
 
 	// Create an HTTP client to fetch the stream
-	client := &http.Client{}
+	// Use the optimized stream client (no timeout for streaming)
+	client := t.streamClient
 
-	// Only set timeout if greater than 0
+	// Override timeout if RequestTimeout is configured
 	if t.RequestTimeout > 0 {
-		client.Timeout = t.RequestTimeout
-		logger.Debug("Using HTTP client timeout: %s", t.RequestTimeout)
+		// Create a new client with custom timeout using the same optimized settings
+		client = utils.HTTPClientWithTimeout(t.RequestTimeout)
+		logger.Debug("Using custom HTTP client timeout: %s", t.RequestTimeout)
 	} else {
-		logger.Debug("No timeout set for HTTP client, stream will continue until closed")
+		logger.Debug("Using streaming client with no timeout, stream will continue until closed")
 	}
 
 	// Create the request
@@ -439,7 +506,7 @@ func (t *Transcoder) TranscodeChannel(w http.ResponseWriter, r *http.Request, ch
 }
 
 // Stop stops the transcoding process.
-func (t *Transcoder) Stop() {
+func (t *Impl) Stop() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -461,7 +528,7 @@ func (t *Transcoder) Stop() {
 }
 
 // CreateMediaHandler returns a http.Handler for the media endpoints.
-func (t *Transcoder) CreateMediaHandler() http.Handler {
+func (t *Impl) CreateMediaHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Handle auto/v{channel} requests for channel transcoding
@@ -561,7 +628,7 @@ func (t *Transcoder) CreateMediaHandler() http.Handler {
 		}
 
 		// Write system information
-		writeOutput(w, "HDHomeRun Device: %s\n", t.proxy.HDHRIP)
+		writeOutput(w, "HDHomeRun Device: %s\n", t.proxy.GetHDHRIP())
 		writeOutput(w, "FFmpeg Path: %s\n", t.FFmpegPath)
 		if t.RequestTimeout > 0 {
 			writeOutput(w, "Stream Timeout: %s\n", t.RequestTimeout)
@@ -574,7 +641,7 @@ func (t *Transcoder) CreateMediaHandler() http.Handler {
 }
 
 // StopAllTranscoding stops any running transcoding processes.
-func (t *Transcoder) StopAllTranscoding() {
+func (t *Impl) StopAllTranscoding() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -606,14 +673,14 @@ func (t *Transcoder) StopAllTranscoding() {
 }
 
 // updateActivityTimestamp records the last activity time for a channel.
-func (t *Transcoder) updateActivityTimestamp(channel string) {
+func (t *Impl) updateActivityTimestamp(channel string) {
 	t.activityMutex.Lock()
 	t.connectionActivity[channel] = time.Now()
 	t.activityMutex.Unlock()
 }
 
 // startConnectionMonitor starts a goroutine that periodically checks for inactive connections.
-func (t *Transcoder) startConnectionMonitor() {
+func (t *Impl) startConnectionMonitor() {
 	t.mutex.Lock()
 	if t.monitoringActive {
 		t.mutex.Unlock()
@@ -642,7 +709,7 @@ func (t *Transcoder) startConnectionMonitor() {
 }
 
 // cleanupInactiveStreams checks for and cleans up inactive streams.
-func (t *Transcoder) cleanupInactiveStreams() {
+func (t *Impl) cleanupInactiveStreams() {
 	t.activityMutex.Lock()
 	now := time.Now()
 	inactiveChannels := []string{}
@@ -671,11 +738,11 @@ func (t *Transcoder) cleanupInactiveStreams() {
 }
 
 // startFFmpeg starts an FFmpeg process for transcoding with context as first parameter.
-func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Reader, channel string) error {
+func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Reader, channel string) error {
 	logger.Debug("Setting up ffmpeg command with path: %s", t.FFmpegPath)
 
 	// Validate the FFmpeg path to prevent command injection
-	if err := utils.ValidateExecutable(t.FFmpegPath); err != nil {
+	if err := t.securityValidator.ValidateExecutable(t.FFmpegPath); err != nil {
 		logger.Error("Invalid FFmpeg executable: %v", err)
 		http.Error(w, "FFmpeg configuration error", http.StatusInternalServerError)
 		return fmt.Errorf("invalid FFmpeg executable: %w", err)
@@ -751,9 +818,8 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 	go func() {
 		defer stdin.Close()
 		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
-		// Get a buffer from the pool for reading
-		readBuf := t.BufferManager.GetReadBuffer()
-		defer t.BufferManager.ReleaseBuffer(readBuf)
+		// Use a simple buffer for reading
+		readBuf := make([]byte, 64*1024) // 64KB buffer
 
 		// Use a buffered copy approach
 		var totalCopied int64
@@ -764,10 +830,10 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 				return
 			default:
 				// Read from the source
-				n, err := r.Read(readBuf.B)
+				n, err := r.Read(readBuf)
 				if n > 0 {
 					// Write to ffmpeg stdin
-					_, werr := stdin.Write(readBuf.B[:n])
+					_, werr := stdin.Write(readBuf[:n])
 					totalCopied += int64(n)
 					if werr != nil {
 						if strings.Contains(werr.Error(), "broken pipe") {
@@ -803,9 +869,9 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 	// Make sure we cancel the client context when we're done
 	defer clientCancel()
 
-	// Use the stream helper for buffered copying from ffmpeg to the client
-	logger.Debug("Starting buffered stream copy from ffmpeg to response for channel %s...", channel)
-	bytesCopied, err := t.StreamHelper.BufferedCopyWithActivityUpdate(clientCtx, w, stdout, func() {
+	// Use the stream helper for copying from ffmpeg to the client
+	logger.Debug("Starting stream copy from ffmpeg to response for channel %s...", channel)
+	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(clientCtx, w, stdout, func() {
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
 	})
@@ -818,14 +884,11 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error in buffered copy from ffmpeg to response: %v", err)
+		logger.Error("Error in stream copy from ffmpeg to response: %v", err)
 		return fmt.Errorf("failed to copy from ffmpeg to response: %w", err)
 	}
 
-	// Log buffer stats for debugging
-	used, capacity := t.StreamHelper.GetBufferStatus()
-	logger.Debug("Finished buffered copy from ffmpeg to response, bytes copied: %d, final buffer status: %d/%d bytes",
-		bytesCopied, used, capacity)
+	logger.Debug("Finished stream copy from ffmpeg to response, bytes copied: %d", bytesCopied)
 
 	// Wait for ffmpeg to exit
 	if err := cmd.Wait(); err != nil {
@@ -838,7 +901,7 @@ func (t *Transcoder) startFFmpeg(ctx context.Context, w http.ResponseWriter, r i
 }
 
 // StopActiveStream stops and cleans up resources for a specific channel stream.
-func (t *Transcoder) StopActiveStream(channel string) {
+func (t *Impl) StopActiveStream(channel string) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -870,7 +933,7 @@ func (t *Transcoder) StopActiveStream(channel string) {
 }
 
 // Shutdown performs a graceful shutdown of the transcoder and all its resources.
-func (t *Transcoder) Shutdown() {
+func (t *Impl) Shutdown() {
 	defer utils.TimeOperation("Shutdown transcoder")()
 	logger.Info("Stopping transcoder gracefully")
 

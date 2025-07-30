@@ -66,8 +66,8 @@ func TestNewHDHRProxy(t *testing.T) {
 		t.Errorf("Expected HDHRIP to be 192.168.1.100, got %s", proxy.HDHRIP)
 	}
 
-	if proxy.DeviceID != "00ABCDEF" {
-		t.Errorf("Expected DeviceID to be 00ABCDEF, got %s", proxy.DeviceID)
+	if proxy.DeviceID() != "00ABCDEF" {
+		t.Errorf("Expected DeviceID to be 00ABCDEF, got %s", proxy.DeviceID())
 	}
 
 	if proxy.Client == nil {
@@ -90,7 +90,7 @@ func TestReverseDeviceID(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.deviceID, func(t *testing.T) {
-			proxy := &HDHRProxy{DeviceID: tc.deviceID}
+			proxy := &HDHRProxy{deviceID: tc.deviceID}
 			result := proxy.ReverseDeviceID()
 			if result != tc.expected {
 				t.Errorf("ReverseDeviceID() = %s; expected %s", result, tc.expected)

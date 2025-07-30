@@ -9,8 +9,15 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/attaebra/hdhr-proxy/internal/interfaces"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
 )
+
+// DefaultSecurityValidator implements the SecurityValidator interface.
+type DefaultSecurityValidator struct{}
+
+// Ensure DefaultSecurityValidator implements the SecurityValidator interface.
+var _ interfaces.SecurityValidator = (*DefaultSecurityValidator)(nil)
 
 // Common errors.
 var (
@@ -22,7 +29,7 @@ var (
 
 // ValidateExecutable checks if a path is a valid executable file.
 // It performs security checks to prevent command injection and ensure the file exists and is executable.
-func ValidateExecutable(path string) error {
+func (v *DefaultSecurityValidator) ValidateExecutable(path string) error {
 	logger.Debug("Validating executable path: %s", path)
 
 	// Check for directory traversal
@@ -73,6 +80,46 @@ func ValidateExecutable(path string) error {
 
 	logger.Debug("Validated executable: %s", cleanPath)
 	return nil
+}
+
+// ValidatePath performs basic path validation.
+func (v *DefaultSecurityValidator) ValidatePath(path string) error {
+	// Check for directory traversal
+	if strings.Contains(path, "..") {
+		return ErrPathTraversal
+	}
+
+	// Validate path characters
+	validPath := regexp.MustCompile(`^[a-zA-Z0-9_\-./\\]+$`)
+	if !validPath.MatchString(path) {
+		return ErrPathInvalid
+	}
+
+	return nil
+}
+
+// SanitizeInput performs basic input sanitization.
+func (v *DefaultSecurityValidator) SanitizeInput(input string) string {
+	// Remove any control characters and limit length
+	sanitized := strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1 // Remove control characters
+		}
+		return r
+	}, input)
+
+	// Limit length to prevent memory exhaustion
+	if len(sanitized) > 1024 {
+		sanitized = sanitized[:1024]
+	}
+
+	return sanitized
+}
+
+// ValidateExecutable is a standalone function for backward compatibility.
+func ValidateExecutable(path string) error {
+	validator := &DefaultSecurityValidator{}
+	return validator.ValidateExecutable(path)
 }
 
 // isWindows detects if running on Windows.

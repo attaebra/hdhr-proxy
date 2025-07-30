@@ -5,17 +5,16 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/attaebra/hdhr-proxy/internal/config"
 	"github.com/attaebra/hdhr-proxy/internal/constants"
+	"github.com/attaebra/hdhr-proxy/internal/container"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
-	"github.com/attaebra/hdhr-proxy/internal/media/transcoder"
-	"github.com/attaebra/hdhr-proxy/internal/proxy"
 )
 
 func main() {
@@ -27,45 +26,44 @@ func main() {
 	logLevel := flag.String("log-level", "info", "Logging level: error, warn, info, debug")
 	flag.Parse()
 
+	// Create configuration with defaults
+	cfg := config.DefaultConfig()
+
+	// Load configuration from command line flags
+	cfg.LoadFromFlags(hdhrIP, appPort, mediaPort, ffmpegPath, logLevel)
+
+	// Load configuration from environment variables
+	cfg.LoadFromEnvironment()
+
 	// Set the logging level.
-	logger.SetLevel(logger.LevelFromString(*logLevel))
-	logger.Info("Log level set to %s", *logLevel)
+	logger.SetLevel(logger.LevelFromString(cfg.LogLevel))
+	logger.Info("Log level set to %s", cfg.LogLevel)
 
-	// Check for required arguments.
-	if *hdhrIP == "" {
-		logger.Fatal("HDHomeRun IP address is required (-hdhr-ip)")
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal("Configuration validation failed: %v", err)
 	}
 
-	// Initialize the proxy.
-	hdhrProxy := proxy.NewHDHRProxy(*hdhrIP)
-
-	// Fetch the device ID.
-	err := hdhrProxy.FetchDeviceID()
+	// Create the dependency injection container
+	logger.Info("Initializing application with dependency injection...")
+	appContainer, err := container.New(cfg)
 	if err != nil {
-		logger.Warn("Could not fetch device ID from HDHomeRun: %v", err)
-		logger.Warn("Using default device ID: %s", hdhrProxy.DeviceID)
-	} else {
-		logger.Info("Device ID: %s, Reversed: %s", hdhrProxy.DeviceID, hdhrProxy.ReverseDeviceID())
+		logger.Fatal("Failed to initialize application container: %v", err)
 	}
 
-	// Initialize the transcoder.
-	transcoder := transcoder.NewTranscoder(*ffmpegPath, *hdhrIP)
+	logger.Info("Configuration loaded:")
+	logger.Info("  HDHomeRun IP: %s", cfg.HDHomeRunIP)
+	logger.Info("  API Port: %d", cfg.APIPort)
+	logger.Info("  Media Port: %d", cfg.MediaPort)
+	logger.Info("  FFmpeg Path: %s", cfg.FFmpegPath)
 
-	// Set up API server.
-	apiServer := &http.Server{
-		Addr:    fmt.Sprintf("0.0.0.0:%d", *appPort),
-		Handler: hdhrProxy.CreateAPIHandler(),
-	}
-
-	// Set up media server.
-	mediaServer := &http.Server{
-		Addr:    fmt.Sprintf("0.0.0.0:%d", *mediaPort),
-		Handler: transcoder.CreateMediaHandler(),
-	}
+	// Get servers from container
+	apiServer := appContainer.GetAPIServer()
+	mediaServer := appContainer.GetMediaServer()
 
 	// Start the API server.
 	go func() {
-		logger.Info("Starting API server on port %d", *appPort)
+		logger.Info("Starting API server on port %d", cfg.APIPort)
 		if err := apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Error starting API server: %v", err)
 		}
@@ -73,7 +71,7 @@ func main() {
 
 	// Start the media server.
 	go func() {
-		logger.Info("Starting media server on port %d", *mediaPort)
+		logger.Info("Starting media server on port %d", cfg.MediaPort)
 		if err := mediaServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Error starting media server: %v", err)
 		}
@@ -90,16 +88,10 @@ func main() {
 
 	logger.Info("Shutting down servers...")
 
-	// Gracefully shut down servers.
-	if err := apiServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Error shutting down API server: %v", err)
+	// Gracefully shut down all components
+	if err := appContainer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Error during shutdown: %v", err)
 	}
 
-	if err := mediaServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Error shutting down media server: %v", err)
-	}
-
-	// Clean up resources and exit.
-	transcoder.Shutdown()
 	logger.Info("Bye!")
 }
