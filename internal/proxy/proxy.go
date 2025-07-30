@@ -35,6 +35,7 @@ type HDHRProxy struct {
 	HDHRIP   string
 	deviceID string
 	Client   interfaces.Client
+	logger   interfaces.Logger
 }
 
 // Ensure HDHRProxy implements the HDHRProxy interface.
@@ -45,20 +46,24 @@ var _ interfaces.Proxy = (*HDHRProxy)(nil)
 func NewForTesting(hdhrIP string) *HDHRProxy {
 	// Create HTTP client with reasonable timeout for API requests
 	client := utils.HTTPClient(30 * time.Second)
+	// Create logger for testing
+	testLogger := logger.NewZapLogger(logger.LevelDebug)
 
 	return &HDHRProxy{
 		HDHRIP:   hdhrIP,
 		deviceID: "00ABCDEF", // Default device ID, will be updated
 		Client:   client,
+		logger:   testLogger,
 	}
 }
 
 // New creates a new HDHomeRun proxy instance with injected dependencies.
-func New(hdhrIP string, httpClient interfaces.Client) interfaces.Proxy {
+func New(hdhrIP string, httpClient interfaces.Client, logger interfaces.Logger) interfaces.Proxy {
 	return &HDHRProxy{
 		HDHRIP:   hdhrIP,
 		deviceID: "00ABCDEF", // Default device ID, will be updated
 		Client:   httpClient,
+		logger:   logger,
 	}
 }
 
@@ -84,14 +89,16 @@ func (p *HDHRProxy) ReverseDeviceID() string {
 // FetchDeviceID retrieves the actual device ID from the HDHomeRun.
 func (p *HDHRProxy) FetchDeviceID() error {
 	defer utils.TimeOperation("Fetch device ID")()
-	logger.Debug("Fetching device ID from HDHomeRun at %s", p.HDHRIP)
+	p.logger.Debug("📡 Fetching device ID from HDHomeRun",
+		logger.String("hdhr_ip", p.HDHRIP))
 	resp, err := p.Client.Get("http://" + p.HDHRIP + "/discover.json")
 	if err != nil {
 		return utils.LogAndWrapError(err, "failed to connect to HDHomeRun at %s", p.HDHRIP)
 	}
 	defer resp.Body.Close()
 
-	logger.Debug("Received response with status: %d", resp.StatusCode)
+	p.logger.Debug("📨 Received discovery response",
+		logger.Int("status_code", resp.StatusCode))
 
 	if resp.StatusCode != http.StatusOK {
 		return utils.LogAndWrapError(fmt.Errorf("HTTP status %d", resp.StatusCode), "invalid response from HDHomeRun")
@@ -109,13 +116,15 @@ func (p *HDHRProxy) FetchDeviceID() error {
 	}
 
 	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&discovery); err != nil {
-		logger.Warn("Failed to parse discovery JSON, using default device ID: %v", err)
+		p.logger.Warn("⚠️  Failed to parse discovery JSON, using default device ID",
+			logger.ErrorField("error", err))
 		return nil // Don't fail if we can't parse, just use default
 	}
 
 	if discovery.DeviceID != "" {
 		p.deviceID = discovery.DeviceID
-		logger.Debug("Successfully updated device ID to: %s", p.deviceID)
+		p.logger.Debug("✅ Successfully updated device ID",
+			logger.String("device_id", p.deviceID))
 	}
 
 	return nil
@@ -179,7 +188,7 @@ func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
 
 	err = p.executeProxyRequest(w, setup, r)
 	if err != nil {
-		logger.Error("Error in HandleAppRequest: %v", err)
+		p.logger.Error("❌ Error in HandleAppRequest", logger.ErrorField("error", err))
 		// Headers already sent, can't change status code
 	}
 }
@@ -281,7 +290,9 @@ func (p *HDHRProxy) APIHandler() http.Handler {
 // ProxyRequest handles proxying a single HTTP request to the HDHomeRun
 // and transforms the response appropriately.
 func (p *HDHRProxy) ProxyRequest(w http.ResponseWriter, r *http.Request) {
-	logger.Debug("Proxying request: %s %s", r.Method, r.URL.Path)
+	p.logger.Debug("🔄 Proxying request",
+		logger.String("method", r.Method),
+		logger.String("path", r.URL.Path))
 
 	setup, err := p.setupProxyRequest(r)
 	if err != nil {
@@ -289,17 +300,18 @@ func (p *HDHRProxy) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Debug("Target URL: %s", setup.TargetURL.String())
-	logger.Debug("Sending request to HDHomeRun")
+	p.logger.Debug("🎯 Target URL set",
+		logger.String("target_url", setup.TargetURL.String()))
+	p.logger.Debug("📡 Sending request to HDHomeRun")
 
 	err = p.executeProxyRequest(w, setup, r)
 	if err != nil {
-		logger.Error("Error streaming response: %v", err)
+		p.logger.Error("❌ Error streaming response", logger.ErrorField("error", err))
 		// At this point headers are already sent, so we can't send a different HTTP error
 		return
 	}
 
-	logger.Debug("Successfully streamed response")
+	p.logger.Debug("✅ Successfully streamed response")
 }
 
 // streamWithLimitedTransformation streams large responses with basic transformations.
@@ -354,7 +366,8 @@ func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r
 
 	if !needsTransformation {
 		// Stream binary or unknown content directly without transformation
-		logger.Debug("Streaming response directly (Content-Type: %s)", contentType)
+		p.logger.Debug("📺 Streaming response directly",
+			logger.String("content_type", contentType))
 		_, err := io.Copy(w, resp.Body)
 		return err
 	}
@@ -369,7 +382,7 @@ func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r
 
 	// For large responses that need transformation, we'll stream with limited transformation
 	// This is a fallback - in practice, HDHomeRun API responses are typically small
-	logger.Debug("Streaming large response with limited transformation")
+	p.logger.Debug("📦 Streaming large response with limited transformation")
 	return p.streamWithLimitedTransformation(w, resp.Body, r.Host)
 }
 
@@ -396,7 +409,8 @@ func (p *HDHRProxy) getContentLength(headers http.Header) int64 {
 
 // transformSmallResponse handles transformation of small responses using buffer pool.
 func (p *HDHRProxy) transformSmallResponse(w http.ResponseWriter, body io.Reader, host string, contentLength int64) error {
-	logger.Debug("Loading response into memory for transformation (size: %d bytes)", contentLength)
+	p.logger.Debug("💾 Loading response into memory for transformation",
+		logger.Int64("size_bytes", contentLength))
 
 	// Copy with a reasonable limit to prevent memory exhaustion
 	limitedReader := io.LimitReader(body, maxInMemorySize)

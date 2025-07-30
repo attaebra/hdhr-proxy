@@ -77,6 +77,7 @@ func NewForTesting(ffmpegPath string, hdhrIP string) *Impl {
 		ctx:                   ctx,
 		cancel:                cancel,
 		monitoringActive:      false,
+		logger:                logger.NewZapLogger(logger.LevelDebug),
 		FFmpegConfig:          ffmpeg.New(),
 		StreamHelper:          stream.NewHelper(),
 		apiClient:             utils.HTTPClient(5 * time.Second),

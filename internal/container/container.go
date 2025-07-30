@@ -20,6 +20,7 @@ import (
 // Container manages all application dependencies.
 type Container struct {
 	config            *config.Config
+	logger            interfaces.Logger
 	httpClient        interfaces.Client
 	streamClient      interfaces.Client
 	streamer          interfaces.Streamer
@@ -35,11 +36,16 @@ type Container struct {
 
 // Initialize sets up all dependencies using dependency injection.
 func Initialize(cfg *config.Config) (*Container, error) {
-	logger.Info("Initializing application container with dependency injection")
-
 	container := &Container{
 		config: cfg,
 	}
+
+	// Initialize logger first
+	if err := container.initializeLogger(); err != nil {
+		return nil, fmt.Errorf("failed to initialize logger: %w", err)
+	}
+
+	container.logger.Info("🚀 Initializing application container with dependency injection")
 
 	// Initialize dependencies in order
 	if err := container.initializeHTTPClients(); err != nil {
@@ -70,8 +76,16 @@ func Initialize(cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to initialize servers: %w", err)
 	}
 
-	logger.Info("Container initialization completed successfully")
+	container.logger.Info("✅ Container initialization completed successfully")
 	return container, nil
+}
+
+// initializeLogger creates the structured logger.
+func (c *Container) initializeLogger() error {
+	logLevel := logger.LevelFromString(c.config.LogLevel)
+	c.logger = logger.NewZapLogger(logLevel)
+
+	return nil
 }
 
 // initializeHTTPClients creates HTTP clients.
@@ -82,8 +96,9 @@ func (c *Container) initializeHTTPClients() error {
 	// Client for streaming (no timeout)
 	c.streamClient = utils.HTTPClient(c.config.StreamClientTimeout)
 
-	logger.Debug("Initialized HTTP clients - API timeout: %v, Stream timeout: %v",
-		c.config.HTTPClientTimeout, c.config.StreamClientTimeout)
+	c.logger.Debug("🌐 Initialized HTTP clients",
+		logger.Duration("api_timeout", c.config.HTTPClientTimeout),
+		logger.Duration("stream_timeout", c.config.StreamClientTimeout))
 	return nil
 }
 
@@ -92,7 +107,7 @@ func (c *Container) initializeFFmpegConfig() error {
 	// Use FFmpeg configuration with built-in AC4 error resilience
 	c.ffmpegConfig = ffmpeg.New()
 
-	logger.Debug("Initialized FFmpeg config with AC4 error resilience")
+	c.logger.Debug("🎬 Initialized FFmpeg config with AC4 error resilience")
 	return nil
 }
 
@@ -101,7 +116,7 @@ func (c *Container) initializeSecurityValidator() error {
 	// Use a factory function for consistency with other dependencies
 	c.securityValidator = utils.NewSecurityValidator()
 
-	logger.Debug("Initialized security validator")
+	c.logger.Debug("🔒 Initialized security validator")
 	return nil
 }
 
@@ -109,18 +124,19 @@ func (c *Container) initializeSecurityValidator() error {
 func (c *Container) initializeStreamer() error {
 	c.streamer = stream.NewHelper()
 
-	logger.Debug("Initialized stream helper")
+	c.logger.Debug("📺 Initialized stream helper")
 	return nil
 }
 
 // initializeProxy creates the HDHomeRun proxy with dependency injection.
 func (c *Container) initializeProxy() error {
-	logger.Debug("Creating HDHomeRun proxy with injected HTTP client")
+	c.logger.Debug("🔧 Creating HDHomeRun proxy with injected HTTP client")
 
 	// Use dependency injection for the proxy
 	c.hdhrProxy = proxy.New(
 		c.config.HDHomeRunIP,
 		c.httpClient,
+		c.logger,
 	)
 
 	// Fetch the device ID from the HDHomeRun
@@ -128,17 +144,19 @@ func (c *Container) initializeProxy() error {
 		return fmt.Errorf("failed to fetch HDHomeRun device ID: %w", err)
 	}
 
-	logger.Info("HDHomeRun proxy initialized with device ID: %s", c.hdhrProxy.DeviceID())
+	c.logger.Info("📡 HDHomeRun proxy initialized",
+		logger.String("device_id", c.hdhrProxy.DeviceID()))
 	return nil
 }
 
 // initializeTranscoder creates the media transcoder with dependency injection.
 func (c *Container) initializeTranscoder() error {
-	logger.Debug("Creating transcoder with dependency injection")
+	c.logger.Debug("🎵 Creating transcoder with dependency injection")
 
 	// Create transcoder dependencies struct
 	deps := &transcoder.Dependencies{
 		Config:            c.config,
+		Logger:            c.logger,
 		HTTPClient:        c.httpClient,
 		StreamClient:      c.streamClient,
 		FFmpegConfig:      c.ffmpegConfig,
@@ -154,7 +172,7 @@ func (c *Container) initializeTranscoder() error {
 		return fmt.Errorf("failed to create transcoder: %w", err)
 	}
 
-	logger.Debug("Transcoder initialized with dependency injection")
+	c.logger.Debug("✨ Transcoder initialized with dependency injection")
 	return nil
 }
 
@@ -178,7 +196,9 @@ func (c *Container) initializeServers() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	logger.Debug("Initialized servers - API: %d, Media: %d", c.config.APIPort, c.config.MediaPort)
+	c.logger.Debug("🚀 Initialized servers",
+		logger.Int("api_port", c.config.APIPort),
+		logger.Int("media_port", c.config.MediaPort))
 	return nil
 }
 
@@ -194,7 +214,7 @@ func (c *Container) GetMediaServer() *http.Server {
 
 // Shutdown performs graceful shutdown of all components.
 func (c *Container) Shutdown(ctx context.Context) error {
-	logger.Info("Shutting down container...")
+	c.logger.Info("🛑 Shutting down container...")
 
 	// Shutdown transcoder first to stop ongoing streams
 	if c.transcoder != nil {
@@ -204,16 +224,16 @@ func (c *Container) Shutdown(ctx context.Context) error {
 	// Shutdown servers
 	if c.apiServer != nil {
 		if err := c.apiServer.Shutdown(ctx); err != nil {
-			logger.Error("Error shutting down API server: %v", err)
+			c.logger.Error("❌ Error shutting down API server", logger.ErrorField("error", err))
 		}
 	}
 
 	if c.mediaServer != nil {
 		if err := c.mediaServer.Shutdown(ctx); err != nil {
-			logger.Error("Error shutting down media server: %v", err)
+			c.logger.Error("❌ Error shutting down media server", logger.ErrorField("error", err))
 		}
 	}
 
-	logger.Info("Container shutdown complete")
+	c.logger.Info("✅ Container shutdown complete")
 	return nil
 }

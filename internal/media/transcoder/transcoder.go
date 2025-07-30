@@ -25,6 +25,7 @@ import (
 // Dependencies holds all dependencies needed for transcoder initialization.
 type Dependencies struct {
 	Config            *config.Config
+	Logger            interfaces.Logger
 	HTTPClient        interfaces.Client
 	StreamClient      interfaces.Client
 	FFmpegConfig      interfaces.Config
@@ -52,16 +53,13 @@ type Impl struct {
 	ffmpegProcesses       map[string]int // Map channel to PID (changed from int->string to string->int)
 	monitoringActive      bool           // Flag to track if monitoring is active
 
-	// New fields for the improved buffer and streaming modules
-	FFmpegConfig interfaces.Config
-	StreamHelper interfaces.Streamer
-
-	// Optimized HTTP clients
-	apiClient    interfaces.Client // For API requests with timeouts
-	streamClient interfaces.Client // For streaming with no timeout
-
-	// Security validator
-	securityValidator interfaces.SecurityValidator
+	// Injected dependencies
+	logger            interfaces.Logger            // Structured logger via DI
+	FFmpegConfig      interfaces.Config            // FFmpeg configuration
+	StreamHelper      interfaces.Streamer          // Stream processing helper
+	apiClient         interfaces.Client            // For API requests with timeouts
+	streamClient      interfaces.Client            // for streaming with no timeout
+	securityValidator interfaces.SecurityValidator // Security validation
 }
 
 // Ensure Impl implements the Transcoder interface.
@@ -79,7 +77,7 @@ func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
 
 	// Ensure the input URL is correctly formatted
 	baseURL := fmt.Sprintf("http://%s:%d", deps.Config.HDHomeRunIP, deps.Config.MediaPort)
-	logger.Debug("Using streaming base URL: %s", baseURL)
+	// Note: we'll use the injected logger after t is created
 
 	t := &Impl{
 		FFmpegPath:            deps.Config.FFmpegPath,
@@ -96,6 +94,7 @@ func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
 		monitoringActive:      false,
 
 		// Initialize injected dependencies
+		logger:            deps.Logger,
 		FFmpegConfig:      deps.FFmpegConfig,
 		StreamHelper:      deps.StreamHelper,
 		apiClient:         deps.HTTPClient,
@@ -106,8 +105,11 @@ func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
 	// Fetch the channel lineup to identify AC4 channels
 	err := t.fetchAC4Channels()
 	if err != nil {
-		logger.Warn("Failed to fetch AC4 channels: %v", err)
+		t.logger.Warn("⚠️  Failed to fetch AC4 channels", logger.ErrorField("error", err))
 	}
+
+	// Log the base URL after logger is available
+	t.logger.Debug("🌐 Using streaming base URL", logger.String("base_url", baseURL))
 
 	// Start the connection monitor
 	t.startConnectionMonitor()
@@ -125,7 +127,7 @@ func (t *Impl) fetchAC4Channels() error {
 		return utils.LogAndWrapError(err, "failed to create request")
 	}
 
-	logger.Debug("Fetching lineup from %s", t.proxy.GetHDHRIP())
+	t.logger.Debug("📡 Fetching channel lineup", logger.String("hdhr_ip", t.proxy.GetHDHRIP()))
 
 	// Execute the request using the optimized API client
 	resp, err := t.apiClient.Do(req)
@@ -164,18 +166,23 @@ func (t *Impl) fetchAC4Channels() error {
 
 		if hasAC4 {
 			ac4Count++
-			logger.Info("Identified AC4 audio channel: %s - %s (Audio: %s, Video: %s)",
-				channel.GuideNumber, channel.GuideName, channel.AudioCodec, channel.VideoCodec)
+			t.logger.Info("🎵 Identified AC4 audio channel",
+				logger.String("channel", channel.GuideNumber),
+				logger.String("name", channel.GuideName),
+				logger.String("audio_codec", channel.AudioCodec),
+				logger.String("video_codec", channel.VideoCodec))
 		} else {
-			logger.Debug("Regular channel: %s - %s (Audio: %s, Video: %s)",
-				channel.GuideNumber, channel.GuideName,
-				getDefaultString(channel.AudioCodec, "Unknown"),
-				getDefaultString(channel.VideoCodec, "Unknown"))
+			t.logger.Debug("📺 Regular channel",
+				logger.String("channel", channel.GuideNumber),
+				logger.String("name", channel.GuideName),
+				logger.String("audio_codec", getDefaultString(channel.AudioCodec, "Unknown")),
+				logger.String("video_codec", getDefaultString(channel.VideoCodec, "Unknown")))
 		}
 	}
 
-	logger.Info("Found %d channels with AC4 audio out of %d total channels",
-		ac4Count, len(lineup))
+	t.logger.Info("📊 Channel lineup analyzed",
+		logger.Int("ac4_channels", ac4Count),
+		logger.Int("total_channels", len(lineup)))
 
 	return nil
 }
@@ -196,7 +203,8 @@ func (t *Impl) isAC4Channel(channel string) bool {
 	isAC4, exists := t.ac4Channels[channel]
 	if !exists {
 		// If we don't know, assume it might have AC4 to be safe
-		logger.Debug("Unknown channel %s, assuming it may have AC4 audio", channel)
+		t.logger.Debug("❓ Unknown channel, assuming AC4",
+			logger.String("channel", channel))
 		return true
 	}
 	return isAC4
@@ -224,23 +232,27 @@ func (t *Impl) setupStreamConnection(w http.ResponseWriter, r *http.Request, cha
 	// Update activity timestamp
 	t.updateActivityTimestamp(channel)
 
-	logger.Info("%s for channel: %s (active streams: %d)", streamType, channel, activeCount)
-	logger.Debug("Using input URL: %s/auto/v%s", t.InputURL, channel)
+	t.logger.Info("▶️  Stream setup",
+		logger.String("type", streamType),
+		logger.String("channel", channel),
+		logger.Int("active_streams", activeCount))
+	t.logger.Debug("🔗 Stream connection",
+		logger.String("input_url", fmt.Sprintf("%s/auto/v%s", t.InputURL, channel)))
 
 	// Create a context that will be canceled when the client disconnects
 	ctx, cancel := context.WithCancel(r.Context())
 
 	// Use the streaming client (no timeout) for media streaming operations
 	client := t.streamClient
-	logger.Debug("Using streaming client with no timeout, stream will continue until closed")
+	t.logger.Debug("🚰 Using streaming client with no timeout")
 
 	// Create the request
 	sourceURL := fmt.Sprintf("%s/auto/v%s", t.InputURL, channel)
-	logger.Debug("Connecting to source URL: %s", sourceURL)
+	t.logger.Debug("🌐 Connecting to source", logger.String("url", sourceURL))
 	req, err := http.NewRequestWithContext(ctx, "GET", sourceURL, nil)
 	if err != nil {
 		cancel()
-		logger.Error("Failed to create HTTP request: %v", err)
+		t.logger.Error("❌ Failed to create HTTP request", logger.ErrorField("error", err))
 		http.Error(w, "Failed to create HTTP request", http.StatusInternalServerError)
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
@@ -249,31 +261,32 @@ func (t *Impl) setupStreamConnection(w http.ResponseWriter, r *http.Request, cha
 	req.Header.Set("User-Agent", "hdhr-proxy/1.0")
 
 	// Execute the request
-	logger.Debug("Sending request to HDHomeRun...")
+	t.logger.Debug("📡 Sending request to HDHomeRun...")
 	connStart := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
-		logger.Error("Failed to fetch stream: %v", err)
+		t.logger.Error("❌ Failed to fetch stream", logger.ErrorField("error", err))
 		http.Error(w, "Failed to fetch stream from HDHomeRun", http.StatusBadGateway)
 		return nil, fmt.Errorf("failed to fetch stream: %w", err)
 	}
-	logger.Debug("Connected to HDHomeRun in %d ms", time.Since(connStart).Milliseconds())
+	t.logger.Debug("✅ Connected to HDHomeRun", logger.Duration("connect_time", time.Since(connStart)))
 
 	// Check response status
-	logger.Debug("Received response with status: %d", resp.StatusCode)
+	t.logger.Debug("📨 Received response", logger.Int("status_code", resp.StatusCode))
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		cancel()
 		statusMsg := fmt.Sprintf("Invalid response from HDHomeRun: %d", resp.StatusCode)
-		logger.Error("Invalid response from HDHomeRun: %d", resp.StatusCode)
+		t.logger.Error("❌ Invalid response from HDHomeRun", logger.Int("status_code", resp.StatusCode))
 		http.Error(w, statusMsg, http.StatusBadGateway)
 		return nil, fmt.Errorf("invalid response from HDHomeRun: %d", resp.StatusCode)
 	}
 
 	// Log response details
-	logger.Debug("Response content type: %s", resp.Header.Get("Content-Type"))
-	logger.Debug("Response headers: %v", resp.Header)
+	t.logger.Debug("📄 Response details",
+		logger.String("content_type", resp.Header.Get("Content-Type")),
+		logger.Any("headers", resp.Header))
 
 	// Set appropriate headers for streaming
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
@@ -284,7 +297,8 @@ func (t *Impl) setupStreamConnection(w http.ResponseWriter, r *http.Request, cha
 	// Set up goroutine to detect client disconnection
 	go func() {
 		<-clientCtx.Done()
-		logger.Debug("Client context done, cleaning up resources for channel %s", channel)
+		t.logger.Debug("🔌 Client disconnected, cleaning up resources",
+			logger.String("channel", channel))
 		t.StopActiveStream(channel)
 	}()
 
@@ -300,7 +314,10 @@ func (t *Impl) setupStreamConnection(w http.ResponseWriter, r *http.Request, cha
 // cleanupStream handles cleanup after streaming is complete.
 func (t *Impl) cleanupStream(setup *StreamSetup, channel string, streamType string) {
 	if r := recover(); r != nil {
-		logger.Error("Recovered from panic in %s: %v\nStack: %s", streamType, r, debug.Stack())
+		t.logger.Error("🚨 Recovered from panic",
+			logger.String("stream_type", streamType),
+			logger.Any("panic", r),
+			logger.String("stack", string(debug.Stack())))
 	}
 
 	// Cancel contexts to release resources
@@ -317,7 +334,10 @@ func (t *Impl) cleanupStream(setup *StreamSetup, channel string, streamType stri
 	duration := time.Since(setup.StartTime).Seconds()
 	t.mutex.Unlock()
 
-	logger.Info("%s session for channel %s ended after %.2f seconds", streamType, channel, duration)
+	t.logger.Info("⏹️  Stream session ended",
+		logger.String("type", streamType),
+		logger.String("channel", channel),
+		logger.Duration("duration", time.Duration(duration*float64(time.Second))))
 }
 
 // DirectStreamChannel streams the channel directly without transcoding.
@@ -332,7 +352,7 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 	defer t.cleanupStream(setup, channel, "Direct streaming")
 
 	// Use our stream copy instead of simple io.Copy
-	logger.Debug("Starting stream copy from HDHomeRun to response for channel %s...", channel)
+	t.logger.Debug("📺 Starting direct stream copy", logger.String("channel", channel))
 	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(setup.Context, w, setup.Response.Body, func() {
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
@@ -341,16 +361,20 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
-			logger.Debug("Client disconnected during direct stream for channel %s: %v", channel, err)
+			t.logger.Debug("🔌 Client disconnected during direct stream",
+				logger.String("channel", channel),
+				logger.ErrorField("error", err))
 			// Ensure we clean up resources when the client disconnects
 			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error in stream copy from HDHomeRun to response: %v", err)
+		t.logger.Error("❌ Stream copy error", logger.ErrorField("error", err))
 		return fmt.Errorf("stream interrupted: %w", err)
 	}
 
-	logger.Debug("Finished direct stream copy, bytes copied: %d", bytesCopied)
+	t.logger.Debug("✅ Direct stream completed",
+		logger.String("channel", channel),
+		logger.Int64("bytes_copied", bytesCopied))
 	return nil
 }
 
@@ -376,7 +400,7 @@ func (t *Impl) Stop() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	logger.Info("Stopping transcoder gracefully")
+	t.logger.Info("🛑 Stopping transcoder gracefully")
 
 	if t.cancel != nil {
 		t.cancel()
@@ -384,9 +408,10 @@ func (t *Impl) Stop() {
 
 	// Log active streams that are being stopped
 	for channel, startTime := range t.activeStreams {
-		duration := time.Since(startTime).Seconds()
-		logger.Info("Stopping active stream for channel %s (duration: %.2f seconds)",
-			channel, duration)
+		duration := time.Since(startTime)
+		t.logger.Info("⏹️  Stopping active stream",
+			logger.String("channel", channel),
+			logger.Duration("duration", duration))
 	}
 
 	// Clear active streams
@@ -402,52 +427,67 @@ func (t *Impl) MediaHandler() http.Handler {
 		remoteAddr := r.RemoteAddr
 		userAgent := r.UserAgent()
 
-		logger.Info("Received media request: %s %s from %s (User-Agent: %s)",
-			r.Method, r.URL.Path, remoteAddr, userAgent)
+		t.logger.Info("📺 Media request received",
+			logger.String("method", r.Method),
+			logger.String("path", r.URL.Path),
+			logger.String("client_ip", remoteAddr),
+			logger.String("user_agent", userAgent))
 
 		// Extract channel from URL path
 		if !strings.HasPrefix(r.URL.Path, "/auto/v") {
-			logger.Debug("Path %s doesn't match /auto/v pattern, returning 404", r.URL.Path)
+			t.logger.Debug("❌ Invalid path pattern", logger.String("path", r.URL.Path))
 			http.NotFound(w, r)
 			return
 		}
 
 		channel := strings.TrimPrefix(r.URL.Path, "/auto/v")
 		if channel == "" {
-			logger.Warn("Empty channel requested from %s", remoteAddr)
+			t.logger.Warn("⚠️  Empty channel requested", logger.String("client_ip", remoteAddr))
 			http.Error(w, "Missing channel number", http.StatusBadRequest)
 			return
 		}
 
 		// Check if this channel has AC4 audio needing transcoding
 		if t.isAC4Channel(channel) {
-			logger.Info("Processing channel %s with AC4 audio - transcoding to EAC3", channel)
+			t.logger.Info("🎵 AC4 transcoding started",
+				logger.String("channel", channel),
+				logger.String("from", "AC4"),
+				logger.String("to", "EAC3"))
 			if err := t.TranscodeChannel(w, r, channel); err != nil {
-				logger.Error("Transcoding error for channel %s: %v", channel, err)
+				t.logger.Error("❌ Transcoding error",
+					logger.String("channel", channel),
+					logger.ErrorField("error", err))
 				// Error already sent to client by TranscodeChannel
 			}
 		} else {
 			// For channels without AC4 audio, stream directly without transcoding
-			logger.Info("Processing channel %s without AC4 audio - direct streaming", channel)
+			t.logger.Info("📡 Direct streaming",
+				logger.String("channel", channel),
+				logger.String("mode", "pass-through"),
+				logger.String("reason", "non-AC4 audio"))
 			if err := t.DirectStreamChannel(w, r, channel); err != nil {
-				logger.Error("Direct streaming error for channel %s: %v", channel, err)
+				t.logger.Error("❌ Direct streaming error",
+					logger.String("channel", channel),
+					logger.ErrorField("error", err))
 				// Error already handled by DirectStreamChannel
 			}
 		}
 
-		logger.Debug("Media handler completed for channel: %s from client %s", channel, remoteAddr)
+		t.logger.Debug("✅ Media handler completed",
+			logger.String("channel", channel),
+			logger.String("client_ip", remoteAddr))
 	})
 
 	// Add a helper function to write output and log it at debug level
 	writeOutput := func(w http.ResponseWriter, format string, args ...interface{}) {
 		msg := fmt.Sprintf(format, args...)
-		logger.Debug("Status output: %s", strings.TrimSpace(msg))
+		t.logger.Debug("📊 Status output", logger.String("content", strings.TrimSpace(msg)))
 		fmt.Fprint(w, msg)
 	}
 
 	// Status endpoint handler
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
-		logger.Info("Status endpoint accessed")
+		t.logger.Info("📊 Status endpoint accessed")
 
 		t.mutex.Lock()
 		activeStreams := len(t.activeStreams)
@@ -508,7 +548,8 @@ func (t *Impl) StopAllTranscoding() {
 	defer t.mutex.Unlock()
 
 	activeStreams := len(t.activeStreams)
-	logger.Info("Stopping all transcoding processes (%d active streams)", activeStreams)
+	t.logger.Info("🛑 Stopping all transcoding processes",
+		logger.Int("active_streams", activeStreams))
 
 	if t.cancel != nil {
 		t.cancel()
@@ -517,13 +558,13 @@ func (t *Impl) StopAllTranscoding() {
 
 	if t.cmd != nil && t.cmd.Process != nil {
 		pid := t.cmd.Process.Pid
-		logger.Debug("Killing ffmpeg process with PID: %d", pid)
+		t.logger.Debug("🔫 Killing ffmpeg process", logger.Int("pid", pid))
 
 		killErr := t.cmd.Process.Kill()
 		if killErr != nil {
-			logger.Error("Error killing ffmpeg process: %v", killErr)
+			t.logger.Error("❌ Error killing ffmpeg process", logger.ErrorField("error", killErr))
 		} else {
-			logger.Debug("Successfully killed ffmpeg process with PID: %d", pid)
+			t.logger.Debug("✅ Successfully killed ffmpeg process", logger.Int("pid", pid))
 		}
 
 		t.cmd = nil
@@ -531,7 +572,7 @@ func (t *Impl) StopAllTranscoding() {
 
 	// Clear active streams
 	t.activeStreams = make(map[string]time.Time)
-	logger.Info("All transcoding processes stopped")
+	t.logger.Info("✅ All transcoding processes stopped")
 }
 
 // updateActivityTimestamp records the last activity time for a channel.
@@ -551,8 +592,9 @@ func (t *Impl) startConnectionMonitor() {
 	t.monitoringActive = true
 	t.mutex.Unlock()
 
-	logger.Info("Starting connection monitor with check interval: %s, max inactivity: %s",
-		t.activityCheckInterval, t.maxInactivityDuration)
+	t.logger.Info("🔍 Starting connection monitor",
+		logger.Duration("check_interval", t.activityCheckInterval),
+		logger.Duration("max_inactivity", t.maxInactivityDuration))
 
 	go func() {
 		ticker := time.NewTicker(t.activityCheckInterval)
@@ -563,7 +605,7 @@ func (t *Impl) startConnectionMonitor() {
 			case <-ticker.C:
 				t.cleanupInactiveStreams()
 			case <-t.ctx.Done():
-				logger.Debug("Connection monitor stopped")
+				t.logger.Debug("🔍 Connection monitor stopped")
 				return
 			}
 		}
@@ -580,8 +622,9 @@ func (t *Impl) cleanupInactiveStreams() {
 	for channel, lastActivity := range t.connectionActivity {
 		inactiveDuration := now.Sub(lastActivity)
 		if inactiveDuration > t.maxInactivityDuration {
-			logger.Info("Detected inactive stream for channel %s (inactive for %s)",
-				channel, inactiveDuration.String())
+			t.logger.Info("🕐 Detected inactive stream",
+				logger.String("channel", channel),
+				logger.Duration("inactive_duration", inactiveDuration))
 			inactiveChannels = append(inactiveChannels, channel)
 		}
 	}
@@ -589,7 +632,7 @@ func (t *Impl) cleanupInactiveStreams() {
 
 	// Then clean them up
 	for _, channel := range inactiveChannels {
-		logger.Info("Cleaning up inactive stream for channel %s", channel)
+		t.logger.Info("🧹 Cleaning up inactive stream", logger.String("channel", channel))
 		t.StopActiveStream(channel)
 
 		// Also remove from activity tracking
@@ -601,11 +644,11 @@ func (t *Impl) cleanupInactiveStreams() {
 
 // startFFmpeg starts an FFmpeg process for transcoding with context as first parameter.
 func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Reader, channel string) error {
-	logger.Debug("Setting up ffmpeg command with path: %s", t.FFmpegPath)
+	t.logger.Debug("🎬 Setting up ffmpeg command", logger.String("ffmpeg_path", t.FFmpegPath))
 
 	// Validate the FFmpeg path to prevent command injection
 	if err := t.securityValidator.ValidateExecutable(t.FFmpegPath); err != nil {
-		logger.Error("Invalid FFmpeg executable: %v", err)
+		t.logger.Error("❌ Invalid FFmpeg executable", logger.ErrorField("error", err))
 		http.Error(w, "FFmpeg configuration error", http.StatusInternalServerError)
 		return fmt.Errorf("invalid FFmpeg executable: %w", err)
 	}
@@ -616,37 +659,38 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	// Get pipes for stdin, stdout, and stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		logger.Error("Failed to get stdin pipe: %v", err)
+		t.logger.Error("❌ Failed to get stdin pipe", logger.ErrorField("error", err))
 		http.Error(w, "Failed to start ffmpeg", http.StatusInternalServerError)
 		return fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		logger.Error("Failed to get stdout pipe: %v", err)
+		t.logger.Error("❌ Failed to get stdout pipe", logger.ErrorField("error", err))
 		http.Error(w, "Failed to start ffmpeg", http.StatusInternalServerError)
 		return fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		logger.Error("Failed to get stderr pipe: %v", err)
+		t.logger.Error("❌ Failed to get stderr pipe", logger.ErrorField("error", err))
 		http.Error(w, "Failed to start ffmpeg", http.StatusInternalServerError)
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
 	// Start FFmpeg
-	logger.Debug("Starting ffmpeg process...")
+	t.logger.Debug("🚀 Starting ffmpeg process...")
 	ffmpegStart := time.Now()
 	if err := cmd.Start(); err != nil {
-		logger.Error("Failed to start ffmpeg: %v", err)
+		t.logger.Error("❌ Failed to start ffmpeg", logger.ErrorField("error", err))
 		http.Error(w, "Failed to start ffmpeg", http.StatusInternalServerError)
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
 	ffmpegPid := cmd.Process.Pid
-	logger.Debug("ffmpeg process started successfully with PID: %d in %d ms",
-		ffmpegPid, time.Since(ffmpegStart).Milliseconds())
+	t.logger.Debug("✅ ffmpeg process started",
+		logger.Int("pid", ffmpegPid),
+		logger.Duration("startup_time", time.Since(ffmpegStart)))
 
 	// Store the ffmpeg process ID
 	t.mutex.Lock()
@@ -655,9 +699,9 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 
 	// Set up a defer to kill the ffmpeg process if needed
 	defer func() {
-		logger.Debug("Killing ffmpeg process with PID: %d", ffmpegPid)
+		t.logger.Debug("🔫 Killing ffmpeg process", logger.Int("pid", ffmpegPid))
 		if err := cmd.Process.Kill(); err != nil {
-			logger.Error("Failed to kill ffmpeg process: %v", err)
+			t.logger.Error("❌ Failed to kill ffmpeg process", logger.ErrorField("error", err))
 		}
 
 		t.mutex.Lock()
@@ -676,7 +720,9 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	go func() {
 		for scanner.Scan() {
 			line := scanner.Text()
-			logger.Debug("ffmpeg[%d]: %s", ffmpegPid, line)
+			t.logger.Debug("🎬 ffmpeg output",
+				logger.Int("pid", ffmpegPid),
+				logger.String("output", line))
 
 			// Detect AC4 decoding errors specifically
 			if strings.Contains(line, "[ac4 @") &&
@@ -714,23 +760,36 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 					errorType = "unknown AC4 error"
 				}
 
-				// Log with different severity based on consecutive errors
+				// Log with different severity based on consecutive errors (with emojis!)
 				switch {
 				case consecutiveCount <= 5:
-					logger.Debug("AC4 error on channel %s: %s (total: %d, consecutive: %d)",
-						channel, errorType, totalCount, consecutiveCount)
+					t.logger.Debug("🔧 AC4 decoding error",
+						logger.String("channel", channel),
+						logger.String("error_type", errorType),
+						logger.Int("total_errors", int(totalCount)),
+						logger.Int("consecutive", int(consecutiveCount)))
 				case consecutiveCount <= maxConsecutiveErrors:
-					logger.Warn("AC4 error on channel %s: %s (total: %d, consecutive: %d)",
-						channel, errorType, totalCount, consecutiveCount)
+					t.logger.Warn("⚠️  AC4 error rate increasing",
+						logger.String("channel", channel),
+						logger.String("error_type", errorType),
+						logger.Int("total_errors", int(totalCount)),
+						logger.Int("consecutive", int(consecutiveCount)))
 				default:
-					logger.Error("High AC4 error rate on channel %s: %s (total: %d, consecutive: %d) - stream may have quality issues",
-						channel, errorType, totalCount, consecutiveCount)
+					t.logger.Error("🚨 High AC4 error rate - stream quality issues",
+						logger.String("channel", channel),
+						logger.String("error_type", errorType),
+						logger.Int("total_errors", int(totalCount)),
+						logger.Int("consecutive", int(consecutiveCount)),
+						logger.String("recommendation", "Check signal quality"))
 				}
 			}
 
-			// Log other critical FFmpeg errors
+			// Log other critical FFmpeg errors (with better sampling)
 			if strings.Contains(line, "Error") && !strings.Contains(line, "[ac4 @") {
-				logger.Error("FFmpeg critical error: %s", line)
+				t.logger.Error("💥 FFmpeg critical error",
+					logger.String("channel", channel),
+					logger.Int("pid", ffmpegPid),
+					logger.String("error_message", line))
 			}
 		}
 	}()
@@ -741,7 +800,7 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	// Set up a goroutine to copy from HDHomeRun to ffmpeg
 	go func() {
 		defer stdin.Close()
-		logger.Debug("Starting stream copy from HDHomeRun to ffmpeg for channel %s...", channel)
+		t.logger.Debug("📺 Starting HDHomeRun → FFmpeg copy", logger.String("channel", channel))
 		// Use a simple buffer for reading
 		readBuf := make([]byte, 64*1024) // 64KB buffer
 
@@ -750,7 +809,7 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 		for {
 			select {
 			case <-ctx.Done():
-				logger.Debug("Context canceled during HDHomeRun to ffmpeg copy")
+				t.logger.Debug("🔄 Context canceled during HDHomeRun → FFmpeg copy")
 				return
 			default:
 				// Read from the source
@@ -761,9 +820,9 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 					totalCopied += int64(n)
 					if werr != nil {
 						if strings.Contains(werr.Error(), "broken pipe") {
-							logger.Debug("FFmpeg pipe closed during write")
+							t.logger.Debug("🚰 FFmpeg pipe closed during write")
 						} else {
-							logger.Error("Error writing to ffmpeg: %v", werr)
+							t.logger.Error("❌ Error writing to ffmpeg", logger.ErrorField("error", werr))
 						}
 						return
 					}
@@ -772,7 +831,7 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 					if err != io.EOF &&
 						!strings.Contains(err.Error(), "connection reset by peer") &&
 						!strings.Contains(err.Error(), "broken pipe") {
-						logger.Error("Error reading from HDHomeRun: %v", err)
+						t.logger.Error("❌ Error reading from HDHomeRun", logger.ErrorField("error", err))
 					}
 					return
 				}
@@ -786,7 +845,8 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	// Set up a goroutine to detect client disconnection
 	go func() {
 		<-clientCtx.Done()
-		logger.Debug("Client context done, cleaning up resources for channel %s", channel)
+		t.logger.Debug("🔌 Client disconnected, cleaning up FFmpeg resources",
+			logger.String("channel", channel))
 		t.StopActiveStream(channel)
 	}()
 
@@ -794,7 +854,7 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	defer clientCancel()
 
 	// Use the stream helper for copying from ffmpeg to the client
-	logger.Debug("Starting stream copy from ffmpeg to response for channel %s...", channel)
+	t.logger.Debug("🎬 Starting FFmpeg → Client copy", logger.String("channel", channel))
 	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(clientCtx, w, stdout, func() {
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
@@ -803,16 +863,20 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	if err != nil {
 		if strings.Contains(err.Error(), "connection reset by peer") ||
 			strings.Contains(err.Error(), "broken pipe") {
-			logger.Debug("Client disconnected during ffmpeg to client copy for channel %s: %v", channel, err)
+			t.logger.Debug("🔌 Client disconnected during FFmpeg → Client copy",
+				logger.String("channel", channel),
+				logger.ErrorField("error", err))
 			// Ensure we clean up resources when the client disconnects
 			t.StopActiveStream(channel)
 			return nil // Client disconnection is not an error we need to report
 		}
-		logger.Error("Error in stream copy from ffmpeg to response: %v", err)
+		t.logger.Error("❌ FFmpeg → Client copy error", logger.ErrorField("error", err))
 		return fmt.Errorf("failed to copy from ffmpeg to response: %w", err)
 	}
 
-	logger.Debug("Finished stream copy from ffmpeg to response, bytes copied: %d", bytesCopied)
+	t.logger.Debug("✅ FFmpeg → Client copy completed",
+		logger.String("channel", channel),
+		logger.Int64("bytes_copied", bytesCopied))
 
 	// Wait for ffmpeg to exit
 	if err := cmd.Wait(); err != nil {
@@ -820,17 +884,21 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 		// We should never terminate the stream just because of AC4 decoding errors
 		finalErrorCount := atomic.LoadInt32(&ac4ErrorCount)
 		if finalErrorCount > 0 {
-			logger.Info("FFmpeg process ended with %d AC4 decoding errors for channel %s - this is normal for live AC4 streams", finalErrorCount, channel)
+			t.logger.Info("ℹ️  FFmpeg process ended with AC4 decoding errors (normal for live AC4)",
+				logger.String("channel", channel),
+				logger.Int("ac4_errors", int(finalErrorCount)))
 			// AC4 errors are not considered failures for continuous streaming
 			return nil
 		}
 
 		// Only treat non-AC4 errors as actual failures
-		logger.Error("ffmpeg process exited with non-AC4 error: %v", err)
+		t.logger.Error("❌ FFmpeg process failed with non-AC4 error",
+			logger.String("channel", channel),
+			logger.ErrorField("error", err))
 		return fmt.Errorf("ffmpeg process failed: %w", err)
 	}
 
-	logger.Debug("Transcoding completed successfully for channel %s", channel)
+	t.logger.Debug("✅ Transcoding completed successfully", logger.String("channel", channel))
 	return nil
 }
 
@@ -851,25 +919,28 @@ func (t *Impl) StopActiveStream(channel string) {
 
 	// Look for any ffmpeg processes for this channel and stop them
 	if pid, exists := t.ffmpegProcesses[channel]; exists {
-		logger.Debug("Killing ffmpeg process with PID: %d for channel %s", pid, channel)
+		t.logger.Debug("🔫 Killing ffmpeg process",
+			logger.Int("pid", pid),
+			logger.String("channel", channel))
 		process, err := os.FindProcess(pid)
 		if err == nil {
 			if killErr := process.Kill(); killErr != nil {
-				logger.Error("Error killing ffmpeg process: %v", killErr)
+				t.logger.Error("❌ Error killing ffmpeg process", logger.ErrorField("error", killErr))
 			} else {
-				logger.Debug("Successfully killed ffmpeg process with PID: %d", pid)
+				t.logger.Debug("✅ Successfully killed ffmpeg process", logger.Int("pid", pid))
 			}
 		}
 		delete(t.ffmpegProcesses, channel)
 	}
 
-	logger.Info("Stopped active stream for channel %s", channel)
+	t.logger.Info("⏹️  Stream stopped",
+		logger.String("channel", channel))
 }
 
 // Shutdown performs a graceful shutdown of the transcoder and all its resources.
 func (t *Impl) Shutdown() {
 	defer utils.TimeOperation("Shutdown transcoder")()
-	logger.Info("Stopping transcoder gracefully")
+	t.logger.Info("🛑 Stopping transcoder gracefully")
 
 	// Stop the activity checker
 	if t.stopActivityCheck != nil {

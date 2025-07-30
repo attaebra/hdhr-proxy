@@ -35,27 +35,31 @@ func main() {
 	// Load configuration from environment variables
 	cfg.LoadFromEnvironment()
 
-	// Set the logging level.
+	// Set the logging level and initialize structured logger
 	logger.SetLevel(logger.LevelFromString(cfg.LogLevel))
-	logger.Info("Log level set to %s", cfg.LogLevel)
+
+	// Create a beautiful startup banner
+	logger.Info("🎯 HDHR Proxy Starting",
+		logger.String("version", "v1.0.0"),
+		logger.String("log_level", cfg.LogLevel))
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		logger.Fatal("Configuration validation failed: %v", err)
+		logger.Fatal("❌ Configuration validation failed", logger.ErrorField("error", err))
 	}
 
 	// Initialize dependency injection container
 	container, err := container.Initialize(cfg)
 	if err != nil {
-		logger.Error("Failed to initialize container: %v", err)
-		return
+		logger.Fatal("❌ Failed to initialize container", logger.ErrorField("error", err))
 	}
 
-	logger.Info("Configuration loaded:")
-	logger.Info("  HDHomeRun IP: %s", cfg.HDHomeRunIP)
-	logger.Info("  API Port: %d", cfg.APIPort)
-	logger.Info("  Media Port: %d", cfg.MediaPort)
-	logger.Info("  FFmpeg Path: %s", cfg.FFmpegPath)
+	// Show beautiful configuration summary
+	logger.Info("⚙️  Configuration loaded",
+		logger.String("hdhr_ip", cfg.HDHomeRunIP),
+		logger.Int("api_port", cfg.APIPort),
+		logger.Int("media_port", cfg.MediaPort),
+		logger.String("ffmpeg_path", cfg.FFmpegPath))
 
 	// Get servers from container
 	apiServer := container.GetAPIServer()
@@ -63,17 +67,17 @@ func main() {
 
 	// Start the API server.
 	go func() {
-		logger.Info("Starting API server on port %d", cfg.APIPort)
+		logger.Info("🌐 Starting API server", logger.Int("port", cfg.APIPort))
 		if err := apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Error starting API server: %v", err)
+			logger.Fatal("❌ Error starting API server", logger.ErrorField("error", err))
 		}
 	}()
 
 	// Start the media server.
 	go func() {
-		logger.Info("Starting media server on port %d", cfg.MediaPort)
+		logger.Info("📺 Starting media server", logger.Int("port", cfg.MediaPort))
 		if err := mediaServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("Error starting media server: %v", err)
+			logger.Fatal("❌ Error starting media server", logger.ErrorField("error", err))
 		}
 	}()
 
@@ -86,12 +90,12 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	logger.Info("Shutting down servers...")
+	logger.Info("🛑 Graceful shutdown initiated...")
 
 	// Gracefully shut down all components
 	if err := container.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Error during shutdown: %v", err)
+		logger.Error("❌ Error during shutdown", logger.ErrorField("error", err))
 	}
 
-	logger.Info("Bye!")
+	logger.Info("👋 HDHR Proxy shutdown complete - Goodbye!")
 }

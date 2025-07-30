@@ -13,7 +13,10 @@ import (
 // This function ensures consistent error handling and logging throughout the application.
 func LogAndWrapError(err error, format string, args ...interface{}) error {
 	if err != nil {
-		logger.Error(format+": %v", append(args, err)...)
+		// Convert to structured logging
+		logger.Error("❌ "+format,
+			logger.ErrorField("error", err),
+			logger.Any("args", args))
 		return fmt.Errorf(format+": %w", append(args, err)...)
 	}
 	return nil
@@ -23,8 +26,12 @@ func LogAndWrapError(err error, format string, args ...interface{}) error {
 // This function is used in HTTP handlers where both logging and response writing are needed.
 func LogAndReturnWithHTTPError(w http.ResponseWriter, status int, err error, logFormat string, userMessage string, args ...interface{}) error {
 	if err != nil {
-		// Log the error with the original format and arguments
-		logger.Error(logFormat+": %v", append(args, err)...)
+		// Log the error with structured logging
+		logger.Error("❌ HTTP error: "+logFormat,
+			logger.ErrorField("error", err),
+			logger.Int("status_code", status),
+			logger.String("user_message", userMessage),
+			logger.Any("args", args))
 
 		// Send HTTP error response with user-friendly message
 		http.Error(w, userMessage, status)
@@ -44,7 +51,9 @@ func HandleClientDisconnect(err error, channel string) bool {
 
 	errStr := err.Error()
 	if isClientDisconnectError(errStr) {
-		logger.Debug("Client disconnected for channel %s: %v", channel, err)
+		logger.Debug("🔌 Client disconnected",
+			logger.String("channel", channel),
+			logger.ErrorField("error", err))
 		return true
 	}
 	return false

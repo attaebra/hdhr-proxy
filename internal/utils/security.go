@@ -30,18 +30,23 @@ var (
 // ValidateExecutable checks if a path is a valid executable file.
 // It performs security checks to prevent command injection and ensure the file exists and is executable.
 func (v *DefaultSecurityValidator) ValidateExecutable(path string) error {
-	logger.Debug("Validating executable path: %s", path)
+	// Use global logger for backward compatibility in utilities
+	// In future, this could accept a logger parameter
+	logger.Debug("🔒 Validating executable path",
+		logger.String("path", path))
 
 	// Check for directory traversal
 	if strings.Contains(path, "..") {
-		logger.Error("Path contains directory traversal attempt: %s", path)
+		logger.Error("❌ Path contains directory traversal attempt",
+			logger.String("path", path))
 		return ErrPathTraversal
 	}
 
 	// Validate path characters
 	validPath := regexp.MustCompile(`^[a-zA-Z0-9_\-./\\]+$`)
 	if !validPath.MatchString(path) {
-		logger.Error("Path contains invalid characters: %s", path)
+		logger.Error("❌ Path contains invalid characters",
+			logger.String("path", path))
 		return ErrPathInvalid
 	}
 
@@ -52,7 +57,8 @@ func (v *DefaultSecurityValidator) ValidateExecutable(path string) error {
 	info, err := os.Stat(cleanPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Error("Executable not found: %s", cleanPath)
+			logger.Error("❌ Executable not found",
+				logger.String("path", cleanPath))
 			return fmt.Errorf("%w: %s", ErrPathNotFound, cleanPath)
 		}
 		return fmt.Errorf("error checking path: %w", err)
@@ -60,7 +66,8 @@ func (v *DefaultSecurityValidator) ValidateExecutable(path string) error {
 
 	// Check if it's a file and executable (on Unix systems)
 	if info.IsDir() {
-		logger.Error("Path is a directory, not an executable: %s", cleanPath)
+		logger.Error("❌ Path is a directory, not an executable",
+			logger.String("path", cleanPath))
 		return fmt.Errorf("%w: is a directory", ErrPathNotExecutable)
 	}
 
@@ -69,16 +76,19 @@ func (v *DefaultSecurityValidator) ValidateExecutable(path string) error {
 	if isWindows() {
 		ext := strings.ToLower(filepath.Ext(cleanPath))
 		if ext != ".exe" && ext != ".bat" && ext != ".cmd" {
-			logger.Warn("Path may not be executable on Windows: %s", cleanPath)
+			logger.Warn("⚠️  Path may not be executable on Windows",
+				logger.String("path", cleanPath))
 			// Not blocking on Windows, just warning
 		}
 	} else if info.Mode()&0111 == 0 {
 		// On Unix-like systems, check execute permission
-		logger.Error("Path is not executable: %s", cleanPath)
+		logger.Error("❌ Path is not executable",
+			logger.String("path", cleanPath))
 		return fmt.Errorf("%w: no execute permission", ErrPathNotExecutable)
 	}
 
-	logger.Debug("Validated executable: %s", cleanPath)
+	logger.Debug("✅ Validated executable",
+		logger.String("path", cleanPath))
 	return nil
 }
 

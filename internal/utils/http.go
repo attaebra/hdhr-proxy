@@ -47,7 +47,8 @@ func HTTPClient(timeout time.Duration) interfaces.Client {
 		Timeout:   timeout,
 	}
 
-	logger.Debug("Created HTTP client for HDHomeRun proxy with timeout: %v", timeout)
+	logger.Debug("🌐 Created HTTP client",
+		logger.Duration("timeout", timeout))
 	return &ClientWrapper{Client: client}
 }
 
@@ -65,20 +66,24 @@ func BuildAPIURL(host, path string) string {
 	}
 
 	url := fmt.Sprintf("http://%s%s", host, path)
-	logger.Debug("Built API URL: %s", url)
+	logger.Debug("🔗 Built API URL",
+		logger.String("url", url))
 	return url
 }
 
 // BuildMediaURL constructs a URL for media streaming endpoints.
 func BuildMediaURL(host, channel string) string {
 	url := fmt.Sprintf("http://%s:%d/auto/v%s", host, constants.DefaultMediaPort, channel)
-	logger.Debug("Built media URL: %s", url)
+	logger.Debug("🎬 Built media URL",
+		logger.String("url", url))
 	return url
 }
 
 // SendRequest sends an HTTP request with timing and logging.
 func SendRequest(client *http.Client, method, url string, body io.Reader) (*http.Response, error) {
-	logger.Debug("Sending %s request to: %s", method, url)
+	logger.Debug("📡 Sending HTTP request",
+		logger.String("method", method),
+		logger.String("url", url))
 
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
@@ -93,15 +98,19 @@ func SendRequest(client *http.Client, method, url string, body io.Reader) (*http
 		return nil, LogAndWrapError(err, "Request to %s failed after %dms", url, elapsed.Milliseconds())
 	}
 
-	logger.Debug("Received response from %s in %dms (status: %d)",
-		url, elapsed.Milliseconds(), resp.StatusCode)
+	logger.Debug("📨 Received HTTP response",
+		logger.String("url", url),
+		logger.Duration("elapsed", elapsed),
+		logger.Int("status_code", resp.StatusCode))
 
 	return resp, nil
 }
 
 // SendRequestWithContext sends an HTTP request with a context and logs timing information.
 func SendRequestWithContext(client *http.Client, req *http.Request) (*http.Response, error) {
-	logger.Debug("Sending %s request to: %s", req.Method, req.URL.String())
+	logger.Debug("📡 Sending HTTP request with context",
+		logger.String("method", req.Method),
+		logger.String("url", req.URL.String()))
 
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -112,8 +121,10 @@ func SendRequestWithContext(client *http.Client, req *http.Request) (*http.Respo
 			req.URL.String(), elapsed.Milliseconds())
 	}
 
-	logger.Debug("Received response from %s in %dms (status: %d)",
-		req.URL.String(), elapsed.Milliseconds(), resp.StatusCode)
+	logger.Debug("📨 Received HTTP response with context",
+		logger.String("url", req.URL.String()),
+		logger.Duration("elapsed", elapsed),
+		logger.Int("status_code", resp.StatusCode))
 
 	return resp, nil
 }
@@ -125,7 +136,8 @@ func WriteJSONResponse(w http.ResponseWriter, data interface{}) error {
 	encoder := json.NewEncoder(w)
 	err := encoder.Encode(data)
 	if err != nil {
-		logger.Error("Failed to encode JSON response: %v", err)
+		logger.Error("❌ Failed to encode JSON response",
+			logger.ErrorField("error", err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return err
 	}
@@ -140,19 +152,25 @@ func CloseWithLogging(closer io.Closer, description string) {
 	}
 
 	if err := closer.Close(); err != nil {
-		logger.Warn("Error closing %s: %v", description, err)
+		logger.Warn("⚠️  Error closing resource",
+			logger.String("description", description),
+			logger.ErrorField("error", err))
 	} else {
-		logger.Debug("Successfully closed %s", description)
+		logger.Debug("✅ Successfully closed resource",
+			logger.String("description", description))
 	}
 }
 
 // TimeOperation times an operation and logs its duration.
 func TimeOperation(description string) func() {
 	start := time.Now()
-	logger.Debug("Starting: %s", description)
+	logger.Debug("⏱️  Starting operation",
+		logger.String("operation", description))
 
 	return func() {
 		elapsed := time.Since(start)
-		logger.Debug("Completed: %s (took %dms)", description, elapsed.Milliseconds())
+		logger.Debug("✅ Completed operation",
+			logger.String("operation", description),
+			logger.Duration("elapsed", elapsed))
 	}
 }
