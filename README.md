@@ -21,10 +21,13 @@ ATSC 3.0 (NextGen TV) broadcasts use AC4 audio encoding, which many media player
 
 ### Docker (Recommended)
 ```bash
-docker run --rm -p 5004:5004 -p 8080:8080 \
-  -e HDHR_IP=192.168.1.100 \
-  -e LOG_LEVEL=info \
-  hdhr-proxy
+# Pull from GitHub Container Registry
+docker pull ghcr.io/attaebra/hdhr-proxy:latest
+
+# Run the container
+docker run --name hdhr-proxy -p 5003:80 -p 5004:5004 \
+  -e HDHR_IP=192.168.50.200 \
+  ghcr.io/attaebra/hdhr-proxy:latest
 ```
 
 ### VLC/Media Player Setup
