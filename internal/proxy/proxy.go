@@ -5,7 +5,6 @@ package proxy
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,32 +19,42 @@ import (
 	"github.com/attaebra/hdhr-proxy/internal/utils"
 )
 
-// HDHRProxy handles proxying requests to the HDHomeRun and transforming the responses.
+// RequestSetup holds the common request setup data.
+type RequestSetup struct {
+	TargetURL *url.URL
+	ProxyReq  *http.Request
+}
+
+// Constants for response handling.
+const (
+	maxInMemorySize = 1024 * 1024 // 1MB - maximum size for in-memory response transformation
+)
+
+// HDHRProxy represents an HDHomeRun proxy instance.
 type HDHRProxy struct {
 	HDHRIP   string
 	deviceID string
-	Client   interfaces.HTTPClient
+	Client   interfaces.Client
 }
 
 // Ensure HDHRProxy implements the HDHRProxy interface.
-var _ interfaces.HDHRProxy = (*HDHRProxy)(nil)
+var _ interfaces.Proxy = (*HDHRProxy)(nil)
 
-// NewHDHRProxy creates a new HDHomeRun proxy instance.
-// hdhrIP is the IP address of the HDHomeRun device to proxy requests to.
-// Returns a configured proxy instance with the device ID fetched from the HDHomeRun.
-func NewHDHRProxy(hdhrIP string) *HDHRProxy {
-	// Create an optimized HTTP client with reasonable timeout for API requests
-	optimizedClient := utils.HTTPClient(30 * time.Second)
+// NewForTesting creates a new HDHomeRun proxy instance for testing.
+// For production use, use New() with dependency injection.
+func NewForTesting(hdhrIP string) *HDHRProxy {
+	// Create HTTP client with reasonable timeout for API requests
+	client := utils.HTTPClient(30 * time.Second)
 
 	return &HDHRProxy{
 		HDHRIP:   hdhrIP,
 		deviceID: "00ABCDEF", // Default device ID, will be updated
-		Client:   optimizedClient,
+		Client:   client,
 	}
 }
 
-// NewHDHRProxyWithDependencies creates a new HDHomeRun proxy instance with injected dependencies.
-func NewHDHRProxyWithDependencies(hdhrIP string, httpClient interfaces.HTTPClient) interfaces.HDHRProxy {
+// New creates a new HDHomeRun proxy instance with injected dependencies.
+func New(hdhrIP string, httpClient interfaces.Client) interfaces.Proxy {
 	return &HDHRProxy{
 		HDHRIP:   hdhrIP,
 		deviceID: "00ABCDEF", // Default device ID, will be updated
@@ -112,9 +121,9 @@ func (p *HDHRProxy) FetchDeviceID() error {
 	return nil
 }
 
-// HandleAppRequest processes app server requests by proxying to HDHomeRun and transforming responses.
-func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
-	// Create a new URL from the original request
+// setupProxyRequest creates a proxy request with proper URL and headers.
+func (p *HDHRProxy) setupProxyRequest(r *http.Request) (*RequestSetup, error) {
+	// Create target URL
 	targetURL := &url.URL{
 		Scheme:   "http",
 		Host:     p.HDHRIP,
@@ -122,32 +131,55 @@ func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
 		RawQuery: r.URL.RawQuery,
 	}
 
-	// Create a new request
+	// Create proxy request
 	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), r.Body)
+	if err != nil {
+		return nil, utils.LogAndWrapError(err, "Error creating proxy request for %s", targetURL.String())
+	}
+
+	// Copy request headers efficiently
+	copyHeaders(r.Header, proxyReq.Header)
+
+	return &RequestSetup{
+		TargetURL: targetURL,
+		ProxyReq:  proxyReq,
+	}, nil
+}
+
+// copyHeaders efficiently copies HTTP headers from source to destination.
+func copyHeaders(src, dst http.Header) {
+	for key, values := range src {
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+// executeProxyRequest sends the proxy request and handles the response.
+func (p *HDHRProxy) executeProxyRequest(w http.ResponseWriter, setup *RequestSetup, originalReq *http.Request) error {
+	// Send the request to the HDHomeRun
+	resp, err := p.Client.Do(setup.ProxyReq)
+	if err != nil {
+		return utils.LogAndReturnWithHTTPError(w, http.StatusBadGateway, err,
+			"Error forwarding request to %s", "Error forwarding request", setup.TargetURL.String())
+	}
+	defer resp.Body.Close()
+
+	// Stream the response efficiently
+	return p.streamResponse(w, resp, originalReq)
+}
+
+// HandleAppRequest processes app server requests by proxying to HDHomeRun and transforming responses.
+func (p *HDHRProxy) HandleAppRequest(w http.ResponseWriter, r *http.Request) {
+	setup, err := p.setupProxyRequest(r)
 	if err != nil {
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
 		return
 	}
 
-	// Copy request headers
-	for key, values := range r.Header {
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
-
-	// Send the request to the HDHomeRun
-	resp, err := p.Client.Do(proxyReq)
+	err = p.executeProxyRequest(w, setup, r)
 	if err != nil {
-		http.Error(w, "Error forwarding request", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Stream the response efficiently
-	err = p.streamResponse(w, resp, r)
-	if err != nil {
-		logger.Error("Error streaming response in HandleAppRequest: %v", err)
+		logger.Error("Error in HandleAppRequest: %v", err)
 		// Headers already sent, can't change status code
 	}
 }
@@ -234,8 +266,8 @@ func (p *HDHRProxy) transformResponseBody(body []byte, host string) []byte {
 	return []byte(result.String())
 }
 
-// CreateAPIHandler returns a http.Handler for the API endpoints.
-func (p *HDHRProxy) CreateAPIHandler() http.Handler {
+// APIHandler returns a http.Handler for the API endpoints.
+func (p *HDHRProxy) APIHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Handle all API requests
@@ -251,56 +283,60 @@ func (p *HDHRProxy) CreateAPIHandler() http.Handler {
 func (p *HDHRProxy) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("Proxying request: %s %s", r.Method, r.URL.Path)
 
-	// Create a new URL from the original request
-	targetURL := &url.URL{
-		Scheme:   "http",
-		Host:     p.HDHRIP,
-		Path:     r.URL.Path,
-		RawQuery: r.URL.RawQuery,
-	}
-
-	logger.Debug("Target URL: %s", targetURL.String())
-
-	// Create a new request
-	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), r.Body)
+	setup, err := p.setupProxyRequest(r)
 	if err != nil {
-		logger.Error("Error creating proxy request: %v", err)
 		http.Error(w, "Error creating proxy request", http.StatusInternalServerError)
 		return
 	}
 
-	// Copy request headers
-	for key, values := range r.Header {
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
-
-	// Send the request to the HDHomeRun
+	logger.Debug("Target URL: %s", setup.TargetURL.String())
 	logger.Debug("Sending request to HDHomeRun")
-	resp, err := p.Client.Do(proxyReq)
-	if err != nil {
-		logger.Error("Error forwarding request: %v", err)
-		http.Error(w, "Error forwarding request", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
 
-	logger.Debug("Received response with status: %d", resp.StatusCode)
-
-	// Stream the response efficiently instead of loading everything into memory
-	err = p.streamResponse(w, resp, r)
+	err = p.executeProxyRequest(w, setup, r)
 	if err != nil {
 		logger.Error("Error streaming response: %v", err)
 		// At this point headers are already sent, so we can't send a different HTTP error
+		return
 	}
 
 	logger.Debug("Successfully streamed response")
 }
 
+// streamWithLimitedTransformation streams large responses with basic transformations.
+func (p *HDHRProxy) streamWithLimitedTransformation(w io.Writer, r io.Reader, host string) error {
+	// For large responses, we'll do basic streaming with line-by-line processing
+	// This is less efficient but prevents memory issues with very large responses
+
+	// Pre-compile replacements for better performance
+	replacer := strings.NewReplacer(
+		p.DeviceID(), p.ReverseDeviceID(),
+		p.HDHRIP+":5004", strings.Split(host, ":")[0]+":5004",
+		"AC4", "AC3",
+	)
+
+	scanner := bufio.NewScanner(r)
+	// Use a reasonable buffer size - 8KB is typically sufficient for API responses
+	buf := make([]byte, 8*1024)   // 8KB buffer (reduced from 64KB)
+	scanner.Buffer(buf, 256*1024) // 256KB max token size (reduced from 1MB)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Apply all transformations at once using the replacer
+		line = replacer.Replace(line)
+
+		// Write the line back with newline
+		if _, err := w.Write([]byte(line + "\n")); err != nil {
+			return err
+		}
+	}
+
+	return scanner.Err()
+}
+
 // streamResponse efficiently streams the response, transforming only when necessary.
 func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r *http.Request) error {
-	// Copy response headers, except Content-Length (we may modify content)
+	// Copy response headers efficiently, except Content-Length (we may modify content)
 	for key, values := range resp.Header {
 		if strings.ToLower(key) != "content-length" {
 			for _, value := range values {
@@ -314,10 +350,7 @@ func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r
 
 	// Check if we need to transform the response
 	contentType := resp.Header.Get("Content-Type")
-	needsTransformation := strings.Contains(contentType, "application/json") ||
-		strings.Contains(contentType, "text/html") ||
-		strings.Contains(contentType, "text/plain") ||
-		strings.Contains(contentType, "text/xml")
+	needsTransformation := p.needsTransformation(contentType)
 
 	if !needsTransformation {
 		// Stream binary or unknown content directly without transformation
@@ -327,40 +360,11 @@ func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r
 	}
 
 	// For content that needs transformation, check the size
-	contentLengthStr := resp.Header.Get("Content-Length")
-	var contentLength int64 = -1
-	if contentLengthStr != "" {
-		if cl, err := strconv.ParseInt(contentLengthStr, 10, 64); err == nil {
-			contentLength = cl
-		}
-	}
+	contentLength := p.getContentLength(resp.Header)
 
 	// If content is small (< 1MB) or size unknown, load and transform
-	const maxInMemorySize = 1024 * 1024 // 1MB
 	if contentLength == -1 || contentLength < maxInMemorySize {
-		logger.Debug("Loading response into memory for transformation (size: %d bytes)", contentLength)
-
-		// Use a buffer with reasonable initial capacity
-		var buf bytes.Buffer
-		if contentLength > 0 {
-			buf.Grow(int(contentLength))
-		} else {
-			buf.Grow(4096) // Default 4KB for unknown size
-		}
-
-		// Copy with a reasonable limit to prevent memory exhaustion
-		limitedReader := io.LimitReader(resp.Body, maxInMemorySize)
-		_, err := io.Copy(&buf, limitedReader)
-		if err != nil {
-			return err
-		}
-
-		// Transform the response
-		transformed := p.transformResponseBody(buf.Bytes(), r.Host)
-
-		// Write the transformed response
-		_, err = w.Write(transformed)
-		return err
+		return p.transformSmallResponse(w, resp.Body, r.Host, contentLength)
 	}
 
 	// For large responses that need transformation, we'll stream with limited transformation
@@ -369,29 +373,44 @@ func (p *HDHRProxy) streamResponse(w http.ResponseWriter, resp *http.Response, r
 	return p.streamWithLimitedTransformation(w, resp.Body, r.Host)
 }
 
-// streamWithLimitedTransformation streams large responses with basic transformations.
-func (p *HDHRProxy) streamWithLimitedTransformation(w io.Writer, r io.Reader, host string) error {
-	// For large responses, we'll do basic streaming with line-by-line processing
-	// This is less efficient but prevents memory issues with very large responses
+// needsTransformation checks if the content type requires transformation.
+func (p *HDHRProxy) needsTransformation(contentType string) bool {
+	return strings.Contains(contentType, "application/json") ||
+		strings.Contains(contentType, "text/html") ||
+		strings.Contains(contentType, "text/plain") ||
+		strings.Contains(contentType, "text/xml")
+}
 
-	scanner := bufio.NewScanner(r)
-	// Increase buffer size for larger lines
-	buf := make([]byte, 64*1024)   // 64KB buffer
-	scanner.Buffer(buf, 1024*1024) // 1MB max token size
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Apply basic transformations per line
-		line = strings.ReplaceAll(line, p.DeviceID(), p.ReverseDeviceID())
-		line = strings.ReplaceAll(line, p.HDHRIP+":5004", strings.Split(host, ":")[0]+":5004")
-		line = strings.ReplaceAll(line, "AC4", "AC3")
-
-		// Write the line back with newline
-		if _, err := w.Write([]byte(line + "\n")); err != nil {
-			return err
-		}
+// getContentLength extracts content length from headers.
+func (p *HDHRProxy) getContentLength(headers http.Header) int64 {
+	contentLengthStr := headers.Get("Content-Length")
+	if contentLengthStr == "" {
+		return -1
 	}
 
-	return scanner.Err()
+	if cl, err := strconv.ParseInt(contentLengthStr, 10, 64); err == nil {
+		return cl
+	}
+	return -1
+}
+
+// transformSmallResponse handles transformation of small responses using buffer pool.
+func (p *HDHRProxy) transformSmallResponse(w http.ResponseWriter, body io.Reader, host string, contentLength int64) error {
+	logger.Debug("Loading response into memory for transformation (size: %d bytes)", contentLength)
+
+	// Copy with a reasonable limit to prevent memory exhaustion
+	limitedReader := io.LimitReader(body, maxInMemorySize)
+
+	// Read directly into memory - for small responses, direct allocation is more efficient
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return err
+	}
+
+	// Transform the response
+	transformed := p.transformResponseBody(data, host)
+
+	// Write the transformed response
+	_, err = w.Write(transformed)
+	return err
 }

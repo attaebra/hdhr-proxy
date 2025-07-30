@@ -12,27 +12,24 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/attaebra/hdhr-proxy/internal/config"
-	"github.com/attaebra/hdhr-proxy/internal/constants"
 	"github.com/attaebra/hdhr-proxy/internal/interfaces"
 	"github.com/attaebra/hdhr-proxy/internal/logger"
 
-	"github.com/attaebra/hdhr-proxy/internal/media/ffmpeg"
-	"github.com/attaebra/hdhr-proxy/internal/media/stream"
-	"github.com/attaebra/hdhr-proxy/internal/proxy"
 	"github.com/attaebra/hdhr-proxy/internal/utils"
 )
 
 // Dependencies holds all dependencies needed for transcoder initialization.
 type Dependencies struct {
 	Config            *config.Config
-	HTTPClient        interfaces.HTTPClient
-	StreamClient      interfaces.HTTPClient
-	FFmpegConfig      interfaces.FFmpegConfig
-	StreamHelper      interfaces.StreamHelper
-	HDHRProxy         interfaces.HDHRProxy
+	HTTPClient        interfaces.Client
+	StreamClient      interfaces.Client
+	FFmpegConfig      interfaces.Config
+	StreamHelper      interfaces.Streamer
+	HDHRProxy         interfaces.Proxy
 	SecurityValidator interfaces.SecurityValidator
 }
 
@@ -45,8 +42,7 @@ type Impl struct {
 	cmd                   *exec.Cmd
 	mutex                 sync.Mutex
 	activeStreams         map[string]time.Time // Track active streams by channel ID
-	RequestTimeout        time.Duration        // HTTP request timeout
-	proxy                 interfaces.HDHRProxy // Reference to the proxy for API access
+	proxy                 interfaces.Proxy     // Reference to the proxy for API access
 	ac4Channels           map[string]bool      // Track which channels have AC4 audio
 	connectionActivity    map[string]time.Time
 	activityCheckInterval time.Duration
@@ -57,12 +53,12 @@ type Impl struct {
 	monitoringActive      bool           // Flag to track if monitoring is active
 
 	// New fields for the improved buffer and streaming modules
-	FFmpegConfig interfaces.FFmpegConfig
-	StreamHelper interfaces.StreamHelper
+	FFmpegConfig interfaces.Config
+	StreamHelper interfaces.Streamer
 
 	// Optimized HTTP clients
-	apiClient    interfaces.HTTPClient // For API requests with timeouts
-	streamClient interfaces.HTTPClient // For streaming with no timeout
+	apiClient    interfaces.Client // For API requests with timeouts
+	streamClient interfaces.Client // For streaming with no timeout
 
 	// Security validator
 	securityValidator interfaces.SecurityValidator
@@ -70,82 +66,6 @@ type Impl struct {
 
 // Ensure Impl implements the Transcoder interface.
 var _ interfaces.Transcoder = (*Impl)(nil)
-
-// NewTranscoder creates a new transcoder instance.
-func NewTranscoder(ffmpegPath string, hdhrIP string) *Impl {
-	// Ensure the input URL is correctly formatted
-	baseURL := fmt.Sprintf("http://%s:%d", hdhrIP, constants.DefaultMediaPort)
-	logger.Debug("Using streaming base URL: %s", baseURL)
-
-	// Initialize proxy
-	hdhrProxy := proxy.NewHDHRProxy(hdhrIP)
-
-	// Initialize with a configurable request timeout
-	var requestTimeout time.Duration
-	timeoutStr := os.Getenv("REQUEST_TIMEOUT")
-	if timeoutStr != "" {
-		// Try to parse the timeout duration
-		var err error
-		requestTimeout, err = time.ParseDuration(timeoutStr)
-		if err == nil {
-			logger.Debug("Using custom request timeout: %s", requestTimeout)
-		} else {
-			logger.Warn("Invalid REQUEST_TIMEOUT format, using no timeout")
-			requestTimeout = 0
-		}
-	} else {
-		logger.Debug("No timeout configured, streaming will continue indefinitely")
-		requestTimeout = 0
-	}
-
-	// Create context for the activity checker
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Create the optimized FFmpeg config
-	ffmpegConfig := ffmpeg.NewOptimizedConfig()
-
-	// Create stream helper
-	streamHelper := stream.NewHelper()
-
-	// Create optimized HTTP clients
-	apiClient := utils.HTTPClient(5 * time.Second) // Short timeout for API requests
-	streamClient := utils.HTTPClient(0)            // No timeout for streaming
-
-	t := &Impl{
-		FFmpegPath:            ffmpegPath,
-		proxy:                 hdhrProxy,
-		activeStreams:         make(map[string]time.Time),
-		ac4Channels:           make(map[string]bool),
-		ffmpegProcesses:       make(map[string]int), // Changed from map[int]string to map[string]int
-		InputURL:              baseURL,
-		RequestTimeout:        requestTimeout,
-		connectionActivity:    make(map[string]time.Time),
-		activityCheckInterval: 30 * time.Second, // Check every 30 seconds
-		maxInactivityDuration: 2 * time.Minute,  // 2 minutes of inactivity before cleanup
-		ctx:                   ctx,
-		stopActivityCheck:     cancel,
-		monitoringActive:      false,
-
-		// Initialize new modules
-		FFmpegConfig: ffmpegConfig,
-		StreamHelper: streamHelper,
-
-		// Initialize optimized HTTP clients
-		apiClient:    apiClient,
-		streamClient: streamClient,
-	}
-
-	// Fetch the channel lineup to identify AC4 channels
-	err := t.fetchAC4Channels()
-	if err != nil {
-		logger.Warn("Failed to fetch AC4 channels: %v", err)
-	}
-
-	// Start the connection monitor
-	t.startConnectionMonitor()
-
-	return t
-}
 
 // Transcoder creates a new transcoder instance with injected dependencies.
 func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
@@ -168,12 +88,11 @@ func Transcoder(deps *Dependencies) (interfaces.Transcoder, error) {
 		ac4Channels:           make(map[string]bool),
 		ffmpegProcesses:       make(map[string]int),
 		InputURL:              baseURL,
-		RequestTimeout:        deps.Config.RequestTimeout,
 		connectionActivity:    make(map[string]time.Time),
 		activityCheckInterval: deps.Config.ActivityCheckInterval,
 		maxInactivityDuration: deps.Config.MaxInactivityDuration,
 		ctx:                   ctx,
-		stopActivityCheck:     cancel,
+		cancel:                cancel,
 		monitoringActive:      false,
 
 		// Initialize injected dependencies
@@ -283,8 +202,17 @@ func (t *Impl) isAC4Channel(channel string) bool {
 	return isAC4
 }
 
-// DirectStreamChannel streams the channel directly without transcoding.
-func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error {
+// StreamSetup contains the result of setting up a stream connection.
+type StreamSetup struct {
+	Response     *http.Response
+	Context      context.Context
+	Cancel       context.CancelFunc
+	ClientCancel context.CancelFunc
+	StartTime    time.Time
+}
+
+// setupStreamConnection handles common stream setup logic for both direct and transcoded streams.
+func (t *Impl) setupStreamConnection(w http.ResponseWriter, r *http.Request, channel string, streamType string) (*StreamSetup, error) {
 	start := time.Now()
 
 	// Track this stream in our active streams
@@ -296,53 +224,28 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 	// Update activity timestamp
 	t.updateActivityTimestamp(channel)
 
-	logger.Info("Direct streaming (no transcode) for channel: %s (active streams: %d)", channel, activeCount)
+	logger.Info("%s for channel: %s (active streams: %d)", streamType, channel, activeCount)
 	logger.Debug("Using input URL: %s/auto/v%s", t.InputURL, channel)
 
 	// Create a context that will be canceled when the client disconnects
 	ctx, cancel := context.WithCancel(r.Context())
 
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("Recovered from panic in DirectStreamChannel: %v\nStack: %s", r, debug.Stack())
-		}
-
-		// Cancel the context to release resources
-		cancel()
-
-		// Remove this stream from active streams
-		t.mutex.Lock()
-		delete(t.activeStreams, channel)
-		duration := time.Since(start).Seconds()
-		t.mutex.Unlock()
-
-		logger.Info("Direct streaming session for channel %s ended after %.2f seconds", channel, duration)
-	}()
-
-	// Create an HTTP client to fetch the stream
-	// Use the optimized stream client (no timeout for streaming)
+	// Use the streaming client (no timeout) for media streaming operations
 	client := t.streamClient
-
-	// Override timeout if RequestTimeout is configured
-	if t.RequestTimeout > 0 {
-		// Create a new client with custom timeout using the same optimized settings
-		client = utils.HTTPClientWithTimeout(t.RequestTimeout)
-		logger.Debug("Using custom HTTP client timeout: %s", t.RequestTimeout)
-	} else {
-		logger.Debug("Using streaming client with no timeout, stream will continue until closed")
-	}
+	logger.Debug("Using streaming client with no timeout, stream will continue until closed")
 
 	// Create the request
 	sourceURL := fmt.Sprintf("%s/auto/v%s", t.InputURL, channel)
 	logger.Debug("Connecting to source URL: %s", sourceURL)
 	req, err := http.NewRequestWithContext(ctx, "GET", sourceURL, nil)
 	if err != nil {
+		cancel()
 		logger.Error("Failed to create HTTP request: %v", err)
 		http.Error(w, "Failed to create HTTP request", http.StatusInternalServerError)
-		return fmt.Errorf("failed to create HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	// Add some default headers
+	// Add default headers
 	req.Header.Set("User-Agent", "hdhr-proxy/1.0")
 
 	// Execute the request
@@ -350,46 +253,87 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 	connStart := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		cancel()
 		logger.Error("Failed to fetch stream: %v", err)
 		http.Error(w, "Failed to fetch stream from HDHomeRun", http.StatusBadGateway)
-		return fmt.Errorf("failed to fetch stream: %w", err)
+		return nil, fmt.Errorf("failed to fetch stream: %w", err)
 	}
 	logger.Debug("Connected to HDHomeRun in %d ms", time.Since(connStart).Milliseconds())
-
-	defer resp.Body.Close()
 
 	// Check response status
 	logger.Debug("Received response with status: %d", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		cancel()
 		statusMsg := fmt.Sprintf("Invalid response from HDHomeRun: %d", resp.StatusCode)
 		logger.Error("Invalid response from HDHomeRun: %d", resp.StatusCode)
 		http.Error(w, statusMsg, http.StatusBadGateway)
-		return fmt.Errorf("invalid response from HDHomeRun: %d", resp.StatusCode)
+		return nil, fmt.Errorf("invalid response from HDHomeRun: %d", resp.StatusCode)
 	}
 
-	// Log content type and headers for debugging
+	// Log response details
 	logger.Debug("Response content type: %s", resp.Header.Get("Content-Type"))
 	logger.Debug("Response headers: %v", resp.Header)
 
 	// Set appropriate headers for streaming
 	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 
-	// Create a context that will be canceled when the client disconnects
+	// Create client context for disconnect detection
 	clientCtx, clientCancel := context.WithCancel(ctx)
 
-	// Set up a goroutine to detect client disconnection
+	// Set up goroutine to detect client disconnection
 	go func() {
 		<-clientCtx.Done()
 		logger.Debug("Client context done, cleaning up resources for channel %s", channel)
 		t.StopActiveStream(channel)
 	}()
 
-	// Make sure we cancel the client context when we're done
-	defer clientCancel()
+	return &StreamSetup{
+		Response:     resp,
+		Context:      clientCtx,
+		Cancel:       cancel,
+		ClientCancel: clientCancel,
+		StartTime:    start,
+	}, nil
+}
+
+// cleanupStream handles cleanup after streaming is complete.
+func (t *Impl) cleanupStream(setup *StreamSetup, channel string, streamType string) {
+	if r := recover(); r != nil {
+		logger.Error("Recovered from panic in %s: %v\nStack: %s", streamType, r, debug.Stack())
+	}
+
+	// Cancel contexts to release resources
+	setup.Cancel()
+	setup.ClientCancel()
+
+	if setup.Response != nil {
+		setup.Response.Body.Close()
+	}
+
+	// Remove this stream from active streams
+	t.mutex.Lock()
+	delete(t.activeStreams, channel)
+	duration := time.Since(setup.StartTime).Seconds()
+	t.mutex.Unlock()
+
+	logger.Info("%s session for channel %s ended after %.2f seconds", streamType, channel, duration)
+}
+
+// DirectStreamChannel streams the channel directly without transcoding.
+func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error {
+	// Setup stream connection using shared helper
+	setup, err := t.setupStreamConnection(w, r, channel, "Direct streaming (no transcode)")
+	if err != nil {
+		return err
+	}
+
+	// Cleanup when done
+	defer t.cleanupStream(setup, channel, "Direct streaming")
 
 	// Use our stream copy instead of simple io.Copy
 	logger.Debug("Starting stream copy from HDHomeRun to response for channel %s...", channel)
-	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(clientCtx, w, resp.Body, func() {
+	bytesCopied, err := t.StreamHelper.CopyWithActivityUpdate(setup.Context, w, setup.Response.Body, func() {
 		// Update activity timestamp whenever data is sent to the client
 		t.updateActivityTimestamp(channel)
 	})
@@ -407,7 +351,6 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 	}
 
 	logger.Debug("Finished direct stream copy, bytes copied: %d", bytesCopied)
-
 	return nil
 }
 
@@ -415,94 +358,17 @@ func (t *Impl) DirectStreamChannel(w http.ResponseWriter, r *http.Request, chann
 func (t *Impl) TranscodeChannel(w http.ResponseWriter, r *http.Request, channel string) error {
 	defer utils.TimeOperation(fmt.Sprintf("Transcoding channel %s", channel))()
 
-	start := time.Now()
-
-	// Track this stream in our active streams
-	t.mutex.Lock()
-	t.activeStreams[channel] = start
-	activeCount := len(t.activeStreams)
-	t.mutex.Unlock()
-
-	// Update activity timestamp
-	t.updateActivityTimestamp(channel)
-
-	logger.Info("Starting transcoding for channel: %s (active streams: %d)", channel, activeCount)
-	logger.Debug("Using input URL: %s/auto/v%s", t.InputURL, channel)
-
-	// Create a context that will be canceled when the client disconnects
-	ctx, cancel := context.WithCancel(r.Context())
-
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("Recovered from panic in TranscodeChannel: %v\nStack: %s", r, debug.Stack())
-		}
-
-		// Cancel the context to release resources
-		cancel()
-
-		// Remove this stream from active streams
-		t.mutex.Lock()
-		delete(t.activeStreams, channel)
-		duration := time.Since(start).Seconds()
-		t.mutex.Unlock()
-
-		logger.Info("Transcoding session for channel %s ended after %.2f seconds", channel, duration)
-	}()
-
-	// Create an HTTP client to fetch the stream
-	// Use the optimized stream client (no timeout for streaming)
-	client := t.streamClient
-
-	// Override timeout if RequestTimeout is configured
-	if t.RequestTimeout > 0 {
-		// Create a new client with custom timeout using the same optimized settings
-		client = utils.HTTPClientWithTimeout(t.RequestTimeout)
-		logger.Debug("Using custom HTTP client timeout: %s", t.RequestTimeout)
-	} else {
-		logger.Debug("Using streaming client with no timeout, stream will continue until closed")
-	}
-
-	// Create the request
-	sourceURL := fmt.Sprintf("%s/auto/v%s", t.InputURL, channel)
-	logger.Debug("Connecting to source URL: %s", sourceURL)
-	req, err := http.NewRequestWithContext(ctx, "GET", sourceURL, nil)
+	// Setup stream connection using shared helper
+	setup, err := t.setupStreamConnection(w, r, channel, "Starting transcoding")
 	if err != nil {
-		logger.Error("Failed to create HTTP request: %v", err)
-		http.Error(w, "Failed to create HTTP request", http.StatusInternalServerError)
-		return fmt.Errorf("failed to create HTTP request: %w", err)
+		return err
 	}
 
-	// Add some default headers
-	req.Header.Set("User-Agent", "hdhr-proxy/1.0")
-
-	// Execute the request
-	logger.Debug("Sending request to HDHomeRun...")
-	connStart := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		logger.Error("Failed to fetch stream: %v", err)
-		http.Error(w, "Failed to fetch stream from HDHomeRun", http.StatusBadGateway)
-		return fmt.Errorf("failed to fetch stream: %w", err)
-	}
-	logger.Debug("Connected to HDHomeRun in %d ms", time.Since(connStart).Milliseconds())
-
-	defer resp.Body.Close()
-
-	// Check response status
-	logger.Debug("Received response with status: %d", resp.StatusCode)
-	if resp.StatusCode != http.StatusOK {
-		statusMsg := fmt.Sprintf("Invalid response from HDHomeRun: %d", resp.StatusCode)
-		logger.Error("Invalid response from HDHomeRun: %d", resp.StatusCode)
-		http.Error(w, statusMsg, http.StatusBadGateway)
-		return fmt.Errorf("invalid response from HDHomeRun: %d", resp.StatusCode)
-	}
-
-	// Log content type and headers for debugging
-	logger.Debug("Response content type: %s", resp.Header.Get("Content-Type"))
-	logger.Debug("Response headers: %v", resp.Header)
+	// Cleanup when done
+	defer t.cleanupStream(setup, channel, "Transcoding")
 
 	// Start FFmpeg to transcode the stream
-	return t.startFFmpeg(ctx, w, resp.Body, channel)
+	return t.startFFmpeg(setup.Context, w, setup.Response.Body, channel)
 }
 
 // Stop stops the transcoding process.
@@ -527,8 +393,8 @@ func (t *Impl) Stop() {
 	t.activeStreams = make(map[string]time.Time)
 }
 
-// CreateMediaHandler returns a http.Handler for the media endpoints.
-func (t *Impl) CreateMediaHandler() http.Handler {
+// MediaHandler returns a http.Handler for the media endpoints.
+func (t *Impl) MediaHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Handle auto/v{channel} requests for channel transcoding
@@ -630,11 +496,7 @@ func (t *Impl) CreateMediaHandler() http.Handler {
 		// Write system information
 		writeOutput(w, "HDHomeRun Device: %s\n", t.proxy.GetHDHRIP())
 		writeOutput(w, "FFmpeg Path: %s\n", t.FFmpegPath)
-		if t.RequestTimeout > 0 {
-			writeOutput(w, "Stream Timeout: %s\n", t.RequestTimeout)
-		} else {
-			writeOutput(w, "Stream Timeout: None (streams indefinitely)\n")
-		}
+		writeOutput(w, "Stream Timeout: None (streams indefinitely)\n")
 	})
 
 	return mux
@@ -805,9 +667,71 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 
 	// Create a scanner to read from stderr for debugging
 	scanner := bufio.NewScanner(stderr)
+	var ac4ErrorCount int32                     // Total AC4 errors for logging
+	var consecutiveErrors int32                 // Consecutive errors in a short timeframe
+	var lastErrorTime int64                     // Timestamp of last error (Unix nanoseconds)
+	const errorResetInterval = 30 * time.Second // Reset consecutive counter after 30 seconds
+	const maxConsecutiveErrors = 20             // Allow up to 20 consecutive errors before warning
+
 	go func() {
 		for scanner.Scan() {
-			logger.Debug("ffmpeg[%d]: %s", ffmpegPid, scanner.Text())
+			line := scanner.Text()
+			logger.Debug("ffmpeg[%d]: %s", ffmpegPid, line)
+
+			// Detect AC4 decoding errors specifically
+			if strings.Contains(line, "[ac4 @") &&
+				(strings.Contains(line, "substream audio data overread") ||
+					strings.Contains(line, "Invalid data found when processing input")) {
+
+				now := time.Now().UnixNano()
+				lastError := atomic.LoadInt64(&lastErrorTime)
+
+				// Reset consecutive counter if enough time has passed since last error
+				if now-lastError > int64(errorResetInterval) {
+					atomic.StoreInt32(&consecutiveErrors, 0)
+				}
+
+				totalCount := atomic.AddInt32(&ac4ErrorCount, 1)
+				consecutiveCount := atomic.AddInt32(&consecutiveErrors, 1)
+				atomic.StoreInt64(&lastErrorTime, now)
+
+				// Extract just the error type for cleaner logging
+				var errorType string
+				switch {
+				case strings.Contains(line, "substream audio data overread"):
+					// Extract the number if present: "substream audio data overread: 5"
+					if idx := strings.Index(line, "substream audio data overread"); idx != -1 {
+						remaining := line[idx:]
+						if colonIdx := strings.Index(remaining, ":"); colonIdx != -1 {
+							errorType = strings.TrimSpace(remaining[:colonIdx+2]) // Include the colon and number
+						} else {
+							errorType = "substream audio data overread"
+						}
+					}
+				case strings.Contains(line, "Invalid data found when processing input"):
+					errorType = "invalid data in input stream"
+				default:
+					errorType = "unknown AC4 error"
+				}
+
+				// Log with different severity based on consecutive errors
+				switch {
+				case consecutiveCount <= 5:
+					logger.Debug("AC4 error on channel %s: %s (total: %d, consecutive: %d)",
+						channel, errorType, totalCount, consecutiveCount)
+				case consecutiveCount <= maxConsecutiveErrors:
+					logger.Warn("AC4 error on channel %s: %s (total: %d, consecutive: %d)",
+						channel, errorType, totalCount, consecutiveCount)
+				default:
+					logger.Error("High AC4 error rate on channel %s: %s (total: %d, consecutive: %d) - stream may have quality issues",
+						channel, errorType, totalCount, consecutiveCount)
+				}
+			}
+
+			// Log other critical FFmpeg errors
+			if strings.Contains(line, "Error") && !strings.Contains(line, "[ac4 @") {
+				logger.Error("FFmpeg critical error: %s", line)
+			}
 		}
 	}()
 
@@ -892,11 +816,21 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 
 	// Wait for ffmpeg to exit
 	if err := cmd.Wait(); err != nil {
-		logger.Error("ffmpeg process exited with error: %v", err)
-		return err
+		// For AC4 streams, decoding errors are common and expected in live TV
+		// We should never terminate the stream just because of AC4 decoding errors
+		finalErrorCount := atomic.LoadInt32(&ac4ErrorCount)
+		if finalErrorCount > 0 {
+			logger.Info("FFmpeg process ended with %d AC4 decoding errors for channel %s - this is normal for live AC4 streams", finalErrorCount, channel)
+			// AC4 errors are not considered failures for continuous streaming
+			return nil
+		}
+
+		// Only treat non-AC4 errors as actual failures
+		logger.Error("ffmpeg process exited with non-AC4 error: %v", err)
+		return fmt.Errorf("ffmpeg process failed: %w", err)
 	}
 
-	logger.Debug("Transcoding completed for channel %s", channel)
+	logger.Debug("Transcoding completed successfully for channel %s", channel)
 	return nil
 }
 

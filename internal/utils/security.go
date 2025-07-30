@@ -122,6 +122,14 @@ func ValidateExecutable(path string) error {
 	return validator.ValidateExecutable(path)
 }
 
+// NewSecurityValidator creates a new DefaultSecurityValidator instance.
+// This follows the factory pattern for consistency with other components.
+func NewSecurityValidator() interfaces.SecurityValidator {
+	return &DefaultSecurityValidator{}
+}
+
+// DefaultSecurityValidator provides security validation for the application.
+
 // isWindows detects if running on Windows.
 func isWindows() bool {
 	return os.PathSeparator == '\\' && os.PathListSeparator == ';'

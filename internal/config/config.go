@@ -4,50 +4,35 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/attaebra/hdhr-proxy/internal/constants"
-	"github.com/attaebra/hdhr-proxy/internal/logger"
 )
 
-// Config holds all application configuration.
+// Config holds the application configuration.
 type Config struct {
-	// Server Configuration
+	// Server configuration
+	APIPort   int
+	MediaPort int
+
+	// HDHomeRun configuration
 	HDHomeRunIP string
-	APIPort     int
-	MediaPort   int
-	LogLevel    string
 
-	// FFmpeg Configuration
+	// FFmpeg configuration
 	FFmpegPath string
+	BufferSize string
 
-	// HTTP Client Configuration
+	// HTTP client timeouts
 	HTTPClientTimeout   time.Duration
 	StreamClientTimeout time.Duration
-	MaxIdleConns        int
-	MaxIdleConnsPerHost int
-	MaxConnsPerHost     int
-	IdleConnTimeout     time.Duration
 
-	// Stream Configuration
-	RequestTimeout        time.Duration
+	// Activity monitoring
 	ActivityCheckInterval time.Duration
 	MaxInactivityDuration time.Duration
-	PreBufferTimeout      time.Duration
-	MinBufferThreshold    int
 
-	// FFmpeg Configuration
-	AudioBitrate       string
-	AudioChannels      string
-	BufferSize         string
-	MaxRate            string
-	Preset             string
-	Tune               string
-	ThreadQueueSize    string
-	MaxMuxingQueueSize string
-	Threads            string
-	Format             string
+	// Runtime configuration
+	LogLevel string
+	Debug    bool
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
@@ -64,29 +49,13 @@ func DefaultConfig() *Config {
 		// HTTP Client defaults
 		HTTPClientTimeout:   30 * time.Second,
 		StreamClientTimeout: 0, // No timeout for streaming
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     50,
-		IdleConnTimeout:     90 * time.Second,
 
 		// Stream defaults
-		RequestTimeout:        0, // No timeout by default
 		ActivityCheckInterval: 30 * time.Second,
 		MaxInactivityDuration: 2 * time.Minute,
-		PreBufferTimeout:      20 * time.Millisecond,
-		MinBufferThreshold:    32 * 1024, // 32KB
 
 		// FFmpeg defaults
-		AudioBitrate:       "384k",
-		AudioChannels:      "2",
-		BufferSize:         "2048k",
-		MaxRate:            "30M",
-		Preset:             "superfast",
-		Tune:               "zerolatency",
-		ThreadQueueSize:    "512",
-		MaxMuxingQueueSize: "256",
-		Threads:            "4",
-		Format:             "mpegts",
+		BufferSize: "2048k",
 	}
 }
 
@@ -105,24 +74,7 @@ func (c *Config) LoadFromEnvironment() {
 		c.FFmpegPath = ffmpegPath
 	}
 
-	// Parse REQUEST_TIMEOUT
-	if timeoutStr := os.Getenv("REQUEST_TIMEOUT"); timeoutStr != "" {
-		if timeout, err := time.ParseDuration(timeoutStr); err == nil {
-			c.RequestTimeout = timeout
-			logger.Debug("Using custom request timeout: %s", timeout)
-		} else {
-			logger.Warn("Invalid REQUEST_TIMEOUT format, using default: %v", err)
-		}
-	}
-
-	// Parse HTTP client settings
-	if maxConns := getEnvInt("MAX_IDLE_CONNS", 0); maxConns > 0 {
-		c.MaxIdleConns = maxConns
-	}
-
-	if maxConnsPerHost := getEnvInt("MAX_IDLE_CONNS_PER_HOST", 0); maxConnsPerHost > 0 {
-		c.MaxIdleConnsPerHost = maxConnsPerHost
-	}
+	// HTTP client settings are now handled directly in utils/http.go
 }
 
 // LoadFromFlags loads configuration from command line flags.
@@ -167,14 +119,4 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
-}
-
-// getEnvInt gets an integer from environment variable with default value.
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intValue, err := strconv.Atoi(value); err == nil {
-			return intValue
-		}
-	}
-	return defaultValue
 }

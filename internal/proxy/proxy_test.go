@@ -55,12 +55,11 @@ func (m *mockHDHR) URL() string {
 	return m.server.URL
 }
 
-// TestNewHDHRProxy tests the creation of a new HDHRProxy.
-func TestNewHDHRProxy(t *testing.T) {
-	// Initialize logger for tests
-	logger.SetLevel(logger.LevelDebug)
+// TestNewForTesting tests the creation of a new HDHRProxy for testing.
+func TestNewForTesting(t *testing.T) {
+	hdhrIP := "192.168.1.100"
 
-	proxy := NewHDHRProxy("192.168.1.100")
+	proxy := NewForTesting(hdhrIP)
 
 	if proxy.HDHRIP != "192.168.1.100" {
 		t.Errorf("Expected HDHRIP to be 192.168.1.100, got %s", proxy.HDHRIP)
@@ -100,29 +99,26 @@ func TestReverseDeviceID(t *testing.T) {
 }
 
 // TestCreateAPIHandler tests the API handler creation.
-func TestCreateAPIHandler(t *testing.T) {
-	// Initialize logger for tests
-	logger.SetLevel(logger.LevelDebug)
-
-	// Set up a mock HDHomeRun server
+func TestAPIHandler(t *testing.T) {
+	// Start mock HDHomeRun server
 	mock := newMockHDHR()
 	defer mock.Close()
 
-	// Create a proxy using the mock server URL
-	// Extract the host and port from the mock URL
-	mockURL := mock.URL()
-	mockHost := strings.TrimPrefix(mockURL, "http://")
+	// Get the host from the mock server URL (e.g., "127.0.0.1:12345")
+	// Remove the "http://" prefix
+	mockHost := mock.server.URL[7:]
 
-	proxy := NewHDHRProxy(mockHost)
+	// Create a proxy instance
+	proxy := NewForTesting(mockHost)
 
 	// Create an API handler
-	handler := proxy.CreateAPIHandler()
+	handler := proxy.APIHandler()
 
 	if handler == nil {
 		t.Error("Expected handler to be non-nil")
 	}
 
-	// Test the discover.json endpoint
+	// Test a simple request to ensure the handler works
 	req := httptest.NewRequest("GET", "/discover.json", nil)
 	recorder := httptest.NewRecorder()
 
@@ -168,10 +164,10 @@ func TestLineupModification(t *testing.T) {
 	mockURL := mock.URL()
 	mockHost := strings.TrimPrefix(mockURL, "http://")
 
-	proxy := NewHDHRProxy(mockHost)
+	proxy := NewForTesting(mockHost)
 
 	// Create an API handler
-	handler := proxy.CreateAPIHandler()
+	handler := proxy.APIHandler()
 
 	// Test the lineup.json endpoint
 	req := httptest.NewRequest("GET", "/lineup.json", nil)
@@ -212,7 +208,7 @@ func TestProxyRequest(t *testing.T) {
 	hdhrURL := strings.TrimPrefix(mockURL, "http://")
 
 	// Create a proxy
-	proxy := NewHDHRProxy(hdhrURL)
+	proxy := NewForTesting(hdhrURL)
 
 	// Test a direct request to the mock server
 	resp, err := http.Get(mockURL + "/discover.json")
@@ -226,7 +222,7 @@ func TestProxyRequest(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	// Test the proxy request functionality
-	handler := proxy.CreateAPIHandler()
+	handler := proxy.APIHandler()
 	handler.ServeHTTP(recorder, req)
 
 	// The response should have the same status code

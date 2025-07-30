@@ -1,12 +1,13 @@
 package ffmpeg
 
 import (
+	"strings"
 	"testing"
 )
 
-func TestNewOptimizedConfig(t *testing.T) {
-	// Create a new config with optimized settings
-	config := NewOptimizedConfig()
+func TestNew(t *testing.T) {
+	// Test that New returns a valid configuration
+	config := New()
 
 	// Verify all the expected fields are set correctly
 	expectedFields := map[string]string{
@@ -86,67 +87,67 @@ func TestNewOptimizedConfig(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	// Create a new config
-	config := NewOptimizedConfig()
+	config := New()
 
 	// Build the arguments
 	args := config.BuildArgs()
 
-	// Count the actual parameters
-	expectedParameters := []string{
-		"-fflags", "+flush_packets",
-		"-flush_packets", "1",
-		"-max_delay", "0",
-		"-thread_queue_size", "512",
-		"-i", "pipe:0",
-		"-c:v", "copy",
-		"-c:a", "eac3",
-		"-b:a", "384k",
-		"-ac", "2",
-		"-bufsize", "2048k",
-		"-maxrate", "30M",
-		"-preset", "superfast",
-		"-tune", "zerolatency",
-		"-max_muxing_queue_size", "256",
-		"-threads", "4",
-		"-f", "mpegts",
-		"pipe:1",
-	}
-
-	// The count should match our list of expected parameters
-	if len(args) != len(expectedParameters) {
-		t.Errorf("Expected %d arguments, got %d", len(expectedParameters), len(args))
-	}
-
-	// Verify key parameters are present and in the right order
-	if args[0] != "-fflags" || args[1] != "+flush_packets" {
-		t.Errorf("Expected first parameter to be -fflags +flush_packets, got %s %s", args[0], args[1])
-	}
-
-	if args[6] != "-thread_queue_size" || args[7] != "512" {
-		t.Errorf("Expected thread_queue_size parameter to be -thread_queue_size 512, got %s %s", args[6], args[7])
-	}
-
-	if args[8] != "-i" || args[9] != "pipe:0" {
-		t.Errorf("Expected input parameter to be -i pipe:0, got %s %s", args[8], args[9])
-	}
-
-	// Check for specific optimization parameters
-	tuneArgIndex := -1
-	for i, arg := range args {
-		if arg == "-tune" && i+1 < len(args) {
-			tuneArgIndex = i
-			break
+	// Convert args to map for easier testing
+	argMap := make(map[string]string)
+	for i := 0; i < len(args)-1; i++ {
+		if strings.HasPrefix(args[i], "-") {
+			argMap[args[i]] = args[i+1]
 		}
 	}
 
-	if tuneArgIndex == -1 {
-		t.Errorf("Expected -tune parameter, but it was not found")
-	} else if args[tuneArgIndex+1] != "zerolatency" {
-		t.Errorf("Expected -tune zerolatency, got -tune %s", args[tuneArgIndex+1])
+	// Test essential flags are present
+	essentialFlags := map[string]string{
+		"-i":                     "pipe:0",
+		"-c:v":                   "copy",
+		"-c:a":                   "eac3",
+		"-b:a":                   "384k",
+		"-ac":                    "2",
+		"-bufsize":               "2048k",
+		"-maxrate":               "30M",
+		"-preset":                "superfast",
+		"-tune":                  "zerolatency",
+		"-max_muxing_queue_size": "256",
+		"-threads":               "4",
+		"-f":                     "mpegts",
+		"-thread_queue_size":     "512",
+		"-flush_packets":         "1",
+		"-max_delay":             "0",
+		"-err_detect":            "ignore_err",
+		"-strict":                "experimental",
+		"-skip_frame":            "nokey",
+		"-avoid_negative_ts":     "make_zero",
 	}
 
-	// Verify the last parameter is the output target
+	for flag, expectedValue := range essentialFlags {
+		if actualValue, exists := argMap[flag]; !exists {
+			t.Errorf("Missing required flag: %s", flag)
+		} else if actualValue != expectedValue {
+			t.Errorf("Flag %s: expected %s, got %s", flag, expectedValue, actualValue)
+		}
+	}
+
+	// Test that error resilience flags are present
+	argsStr := strings.Join(args, " ")
+	if !strings.Contains(argsStr, "+flush_packets+genpts+discardcorrupt") {
+		t.Error("Missing AC4 error resilience flags in -fflags")
+	}
+
+	if !strings.Contains(argsStr, "-ignore_unknown") {
+		t.Error("Missing -ignore_unknown flag for AC4 compatibility")
+	}
+
+	// Test output target is at the end
 	if args[len(args)-1] != "pipe:1" {
-		t.Errorf("Expected last parameter to be pipe:1, got %s", args[len(args)-1])
+		t.Errorf("Expected output target 'pipe:1' at end, got %s", args[len(args)-1])
+	}
+
+	// Test that we have a reasonable number of arguments (should be > 30 with error resilience)
+	if len(args) < 30 {
+		t.Errorf("Expected at least 30 arguments for enhanced config, got %d", len(args))
 	}
 }

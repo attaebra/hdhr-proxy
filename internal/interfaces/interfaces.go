@@ -7,14 +7,14 @@ import (
 	"net/http"
 )
 
-// HTTPClient defines the contract for HTTP client implementations.
-type HTTPClient interface {
+// Client defines the contract for HTTP client implementations.
+type Client interface {
 	Do(req *http.Request) (*http.Response, error)
 	Get(url string) (*http.Response, error)
 }
 
-// FFmpegConfig defines the contract for FFmpeg configuration.
-type FFmpegConfig interface {
+// Config defines the contract for FFmpeg configuration.
+type Config interface {
 	BuildArgs() []string
 	SetPreset(preset string)
 	SetTune(tune string)
@@ -22,18 +22,18 @@ type FFmpegConfig interface {
 	SetAudioChannels(channels string)
 }
 
-// StreamHelper defines the contract for stream processing.
-type StreamHelper interface {
+// Streamer defines the contract for stream processing.
+type Streamer interface {
 	Copy(ctx context.Context, dst io.Writer, src io.Reader) (int64, error)
 	CopyWithActivityUpdate(ctx context.Context, dst io.Writer, src io.Reader, activityCallback func()) (int64, error)
 }
 
-// HDHRProxy defines the contract for HDHomeRun proxy implementations.
-type HDHRProxy interface {
+// Proxy defines the contract for HDHomeRun proxy implementations.
+type Proxy interface {
 	FetchDeviceID() error
 	DeviceID() string
 	ReverseDeviceID() string
-	CreateAPIHandler() http.Handler
+	APIHandler() http.Handler
 	ProxyRequest(w http.ResponseWriter, r *http.Request)
 	GetHDHRIP() string
 }
@@ -42,7 +42,7 @@ type HDHRProxy interface {
 type Transcoder interface {
 	TranscodeChannel(w http.ResponseWriter, r *http.Request, channel string) error
 	DirectStreamChannel(w http.ResponseWriter, r *http.Request, channel string) error
-	CreateMediaHandler() http.Handler
+	MediaHandler() http.Handler
 	StopAllTranscoding()
 	Shutdown()
 }

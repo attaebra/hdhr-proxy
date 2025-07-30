@@ -1,3 +1,4 @@
+// Package stream provides utilities for handling data streams with context cancellation.
 package stream
 
 import (
@@ -8,11 +9,11 @@ import (
 	"github.com/attaebra/hdhr-proxy/internal/interfaces"
 )
 
-// Helper provides simple streaming functionality.
+// Helper implements streaming functionality with context cancellation.
 type Helper struct{}
 
-// Ensure Helper implements the StreamHelper interface.
-var _ interfaces.StreamHelper = (*Helper)(nil)
+// Ensure Helper implements the Streamer interface.
+var _ interfaces.Streamer = (*Helper)(nil)
 
 // NewHelper creates a new stream helper.
 func NewHelper() *Helper {

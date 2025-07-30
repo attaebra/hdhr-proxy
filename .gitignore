@@ -20,6 +20,7 @@ go.work
 # IDE files
 .idea/
 .vscode/
+.cursor.json
 
 # macOS
 .DS_Store

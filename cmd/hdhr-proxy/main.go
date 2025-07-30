@@ -44,11 +44,11 @@ func main() {
 		logger.Fatal("Configuration validation failed: %v", err)
 	}
 
-	// Create the dependency injection container
-	logger.Info("Initializing application with dependency injection...")
-	appContainer, err := container.New(cfg)
+	// Initialize dependency injection container
+	container, err := container.Initialize(cfg)
 	if err != nil {
-		logger.Fatal("Failed to initialize application container: %v", err)
+		logger.Error("Failed to initialize container: %v", err)
+		return
 	}
 
 	logger.Info("Configuration loaded:")
@@ -58,8 +58,8 @@ func main() {
 	logger.Info("  FFmpeg Path: %s", cfg.FFmpegPath)
 
 	// Get servers from container
-	apiServer := appContainer.GetAPIServer()
-	mediaServer := appContainer.GetMediaServer()
+	apiServer := container.GetAPIServer()
+	mediaServer := container.GetMediaServer()
 
 	// Start the API server.
 	go func() {
@@ -89,7 +89,7 @@ func main() {
 	logger.Info("Shutting down servers...")
 
 	// Gracefully shut down all components
-	if err := appContainer.Shutdown(shutdownCtx); err != nil {
+	if err := container.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Error during shutdown: %v", err)
 	}
 

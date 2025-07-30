@@ -4,241 +4,150 @@
 [![Go Tests](https://img.shields.io/github/actions/workflow/status/attaebra/hdhr-proxy/go-tests.yml?label=Tests&logo=go)](https://github.com/attaebra/hdhr-proxy/actions/workflows/go-tests.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-A high-performance Go implementation of a proxy for HDHomeRun ATSC 3.0 tuners that converts AC4 audio to EAC3 for compatibility with media players like Plex, Emby, and VLC.
+A **high-performance Go proxy** for HDHomeRun ATSC 3.0 tuners that seamlessly converts AC4 audio to EAC3, enabling full compatibility with media players like Plex, Emby, and VLC.
 
 ## Overview
 
-ATSC 3.0 (NextGen TV) broadcasts often use AC4 audio encoding, which isn't compatible with many media players. This proxy sits between your media player and an HDHomeRun ATSC 3.0 tuner to:
+ATSC 3.0 (NextGen TV) broadcasts use AC4 audio encoding, which many media players don't support. This proxy provides transparent AC4→EAC3 transcoding while maintaining the full HDHomeRun API experience.
 
-1. Transparently proxy HDHomeRun API requests
-2. On-the-fly transcode AC4 audio to EAC3 audio using FFmpeg
-3. Modify API responses to ensure compatibility with media players
-4. Provide a seamless viewing experience
-
-## Features
-
-- **High Performance**: Written in Go for efficient, concurrent handling of streams
-- **Transparent Proxying**: Full HDHomeRun API compatibility
-- **Automatic Device Detection**: Detects and reverses the device ID to avoid conflicts
-- **Dynamic Channel Handling**: Works with all available channels
-- **Cross-Platform Support**: Runs on x86_64 and ARM64 architectures
-- **Docker Ready**: Easy deployment via containerization
-- **Minimal Dependencies**: Uses FFmpeg extracted from Emby for transcoding
-- **Performance Optimization**: Advanced buffering and hardware acceleration support
-
-## Project Structure
-
-The codebase is organized as follows:
-
-```
-hdhr-proxy/
-├── cmd/                 # Application entry points
-│   └── hdhr-proxy/      # Main application
-├── internal/            # Private application packages
-│   ├── constants/       # Project-wide constant values
-│   ├── logger/          # Logging functionality
-│   ├── media/           # Media transcoding and streaming
-│   │   ├── buffer/      # Efficient buffer management
-│   │   ├── ffmpeg/      # FFmpeg configuration and parameters
-│   │   ├── stream/      # Stream copying and status tracking
-│   │   └── transcoder/  # Media transcoding functionality
-│   ├── proxy/           # HDHomeRun API proxying
-│   └── utils/           # Utility functions and helpers
-├── .github/             # GitHub Actions workflows
-├── Dockerfile           # Docker build instructions
-```
-
-- **cmd/hdhr-proxy/**: Contains the main application entry point
-- **internal/logger/**: Implements the custom logging system with multiple log levels
-- **internal/media/**: Handles media stream transcoding and the `/status` endpoint
-  - **buffer/**: Manages efficient memory buffering for stream processing
-  - **ffmpeg/**: Handles FFmpeg configuration and command-line parameter generation
-  - **stream/**: Provides utilities for stream copying with buffer management
-  - **transcoder/**: Core transcoding functionality for AC4 to EAC3 conversion
-- **internal/proxy/**: Manages the HDHomeRun device communication and API transformations
-
-## Stream Handling and Buffering
-
-The application uses several optimizations for efficient media streaming:
-
-1. **Buffer Management**: Implements a ring buffer system to efficiently handle stream data
-2. **FFmpeg Configuration**: Optimized FFmpeg parameters for low-latency streaming
-   - Thread queue size configuration correctly applied to input stream
-   - Optimized buffer sizes for various network conditions
-   - Zero-latency tuning for minimal delay
-3. **Stream Copy**: Efficient stream copying between components with buffer status tracking
-4. **Context Cancellation**: Proper resource cleanup when streams are disconnected
+**🎯 Core Features:**
+- **Selective Transcoding**: Only processes AC4 channels, passes through standard AC3 channels untouched
+- **HDHomeRun API Compatibility**: Complete transparent proxying with device ID management  
+- **High Performance**: Direct `io.Copy` streaming with dependency injection architecture
+- **AC4 Error Resilience**: Advanced FFmpeg error handling prevents stream crashes
+- **Docker Ready**: Single-container deployment with embedded FFmpeg
 
 ## Quick Start
 
-### Using Docker
-
+### Docker (Recommended)
 ```bash
-docker run -p 5003:80 -p 5004:5004 -e HDHR_IP=192.168.1.101 ghcr.io/attaebra/hdhr-proxy:latest
+docker run --rm -p 5004:5004 -p 8080:8080 \
+  -e HDHR_IP=192.168.1.100 \
+  -e LOG_LEVEL=info \
+  hdhr-proxy
 ```
 
-Replace `192.168.1.101` with the IP address of your HDHomeRun device.
+### VLC/Media Player Setup
+Point your media player to `http://your-proxy-ip:5004` instead of your HDHomeRun's IP. The proxy automatically:
+- Detects AC4 channels and transcodes them to EAC3
+- Passes through regular AC3 channels without modification  
+- Handles all HDHomeRun API calls transparently
 
-### Environment Variables
+## Architecture
 
-- `HDHR_IP` (required): IP address of your HDHomeRun tuner
-- `LINK` (optional): Custom URL to an Emby .deb package for FFmpeg extraction
-- `LOG_LEVEL` (optional): Logging verbosity (debug, info, warn, error) - default is info
-- `REQUEST_TIMEOUT` (optional): HTTP request timeout duration (e.g., "30s", "1m")
+### Clean & Focused Design
+```
+hdhr-proxy/
+├── cmd/hdhr-proxy/          # Application entry point
+├── internal/
+│   ├── config/              # Streamlined configuration
+│   ├── container/           # Dependency injection container
+│   ├── interfaces/          # Clean DI contracts
+│   ├── media/
+│   │   ├── ffmpeg/          # AC4-resilient FFmpeg config
+│   │   ├── stream/          # Direct io.Copy streaming
+│   │   └── transcoder/      # FFmpeg process management
+│   ├── proxy/               # HDHomeRun API proxying
+│   └── utils/               # HTTP utilities
+└── Dockerfile
+```
 
-### Port Mapping
+### Key Design Principles
+- **Dependency Injection**: Clean testable architecture via `internal/container/`
+- **Direct Streaming**: `io.Copy` paths for minimal latency
+- **Interface-Based**: All major components behind interfaces for testability
+- **Resource Management**: Proper context cancellation and cleanup
+- **Error Resilience**: AC4 decoding errors handled gracefully (up to 10 errors/stream)
 
-- Port 80: HDHomeRun API proxy (can be mapped to any host port)
-- Port 5004: Media streaming (must be mapped to host port 5004)
+## Configuration
 
-## Connecting to Media Players
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `HDHR_IP` | *required* | HDHomeRun device IP address |
+| `LOG_LEVEL` | `info` | Logging level (debug, info, warn, error) |
+| `FFMPEG_PATH` | `/usr/bin/ffmpeg` | FFmpeg executable path |
 
-### Plex
+### Ports
+- **5004**: Media streaming (HDHomeRun-compatible)
+- **8080**: API/Discovery (HDHomeRun-compatible)
 
-1. In Plex, go to Settings → Live TV → Set up Live TV
-2. Add a new tuner device
-3. Enter the container's IP and port (e.g., `192.168.1.100:5003`)
-4. Follow the on-screen instructions to complete setup
+## Performance Features
 
-### VLC
+### AC4 Error Resilience  
+The proxy handles corrupted AC4 packets gracefully with **continuous streaming**:
+```
+AC4 decoding error (15 total, 3 consecutive): substream audio data overread
+```
+- **No hard error limit** - streams continue indefinitely
+- **Smart error tracking** with sliding window approach  
+- **Consecutive error monitoring** to detect stream quality issues
+- Only logs warnings for high consecutive error rates
 
-1. Open VLC and select "Open Network Stream"
-2. Enter the URL: `http://localhost:5004/auto/v5.1` (replace v5.1 with your channel number)
-3. Click "Play"
+### Optimized Streaming
+- **Zero-copy paths** where possible
+- **Context-aware cancellation** for clean resource cleanup
+- **Connection pooling** optimized for HDHomeRun usage patterns
+- **Direct FFmpeg piping** without intermediate buffering
 
-## Acknowledgments
-
-This project was inspired by [whichken/hdhr-ac4](https://github.com/whichken/hdhr-ac4), a Node.js implementation that proxies HDHomeRun ATSC 3.0 tuners to transcode AC4 audio. While sharing a similar goal, this Go implementation offers several enhancements:
-
-### Key Improvements
-
-- **Go Implementation**: Written in Go for better performance, lower resource usage, and easier deployment
-- **Selective Transcoding**: Only transcodes channels with AC4 audio, passing through other channels directly without transcoding
-- **Smart Connection Management**: Properly detects client disconnections and immediately releases tuner resources
-- **Configurable Logging Levels**: Supports debug, info, warn, and error log levels configurable via environment variables
-management, FFmpeg configuration, and stream handling for better maintainability.
-- **Enhanced Buffering**: Implemented improved buffer management for smoother streaming with fewer interruptions.
+### HTTP Pipeline Optimization
+- Consolidated request handling (eliminated ~180 lines of duplicate code)
+- Shared connection setup and cleanup routines
+- Optimized timeout settings for streaming vs API operations
 
 ## Development
 
-### Prerequisites
+### Requirements
+- Go 1.24+
+- FFmpeg (5.1+ recommended)
+- Docker (for containerized deployment)
 
-- Go 1.24 or later
-- Docker (for building and testing containers)
-
-### Building From Source
-
-1. Clone the repository
-   ```bash
-   git clone https://github.com/attaebra/hdhr-proxy.git
-   cd hdhr-proxy
-   ```
-
-2. Run the tests
-   ```bash
-   go test ./...
-   ```
-
-3. Build the application
-   ```bash
-   go build ./cmd/hdhr-proxy
-   ```
-
-### Testing
-
-The project includes a comprehensive test suite to validate functionality:
-
-#### Running Tests
-
-Run all tests:
+### Build & Test
 ```bash
-go test ./...
-```
+# Build
+go build ./cmd/hdhr-proxy
 
-Run tests with verbose output:
-```bash
+# Test
 go test -v ./...
-```
 
-#### Test Environment Variables
-
-Some tests can be customized with environment variables:
-
-- `LOG_LEVEL`: Set logging level (debug, info, warn, error) during tests
-
-#### Manual Testing
-
-For manual testing with the HDHomeRun:
-
-1. Start the application with your HDHomeRun IP:
-   ```bash
-   LOG_LEVEL=debug ./hdhr-proxy -hdhr-ip 192.168.1.101
-   ```
-
-2. Test the API endpoints:
-   ```bash
-   curl http://localhost:80/discover.json
-   curl http://localhost:80/lineup.json
-   ```
-
-3. Test the media streaming:
-   ```bash
-   # Using VLC:
-   vlc http://localhost:5004/auto/v5.1
-   ```
-
-4. Check the status endpoint:
-   ```bash
-   curl http://localhost:5004/status
-   ```
-
-### Linting
-
-The project uses golangci-lint for code quality and style checks.
-
-#### Installing the Linter
-
-```bash
-# Install golangci-lint
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-```
-
-#### Running the Linter
-
-Run the linter on the entire codebase:
-```bash
+# Lint
 golangci-lint run
-```
 
-Generate a report in various formats:
-```bash
-golangci-lint run --out-format=json > lint-report.json
-```
-
-Fix automatically fixable issues:
-```bash
-golangci-lint run --fix
-```
-
-### Docker Build
-
-```bash
+# Docker
 docker build -t hdhr-proxy .
 ```
-### Logs
 
-Container logs will show download progress, FFmpeg extraction, and any errors:
+### Architecture Notes
+- **DI Container**: `internal/container/` manages all component lifecycles
+- **Interfaces**: All dependencies injected via interfaces in `internal/interfaces/`
+- **Direct Streaming**: No intermediate buffering - `HDHomeRun → FFmpeg → Client`
+- **Process Management**: FFmpeg processes tracked per channel with proper cleanup
 
-```bash
-docker logs hdhr-proxy
+## Channels & Compatibility
+
+The proxy automatically detects channel audio formats:
+- **AC4 Channels**: Transcoded to EAC3 (384k, stereo)  
+- **AC3 Channels**: Streamed directly (no transcoding)
+- **All Other Formats**: Passed through unchanged
+
+### Tested Media Players
+- ✅ **VLC**: Full compatibility
+- ✅ **Plex**: Complete HDHomeRun integration  
+- ✅ **Emby**: Native HDHomeRun support
+- ✅ **Jellyfin**: Works with HDHomeRun plugin
+
+## Monitoring
+
+### Health Check
+```bash 
+curl http://proxy-ip:8080/health
 ```
 
-Set the `LOG_LEVEL` environment variable to `debug` for more detailed logs:
-
+### Stream Status  
 ```bash
-docker run -e HDHR_IP=192.168.1.101 -e LOG_LEVEL=debug -p 5003:80 -p 5004:5004 ghcr.io/attaebra/hdhr-proxy:latest
+curl http://proxy-ip:5004/status
 ```
+Shows active streams, FFmpeg processes, and system info.
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
