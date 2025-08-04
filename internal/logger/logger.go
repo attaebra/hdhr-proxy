@@ -137,7 +137,19 @@ func NewZapLogger(level LogLevel) interfaces.Logger {
 		zap.AddStacktrace(zapcore.ErrorLevel),
 	)
 	if err != nil {
-		panic("Failed to initialize logger: " + err.Error())
+		// Fallback to a minimal logger configuration that should never fail
+		fallbackConfig := zap.NewDevelopmentConfig()
+		fallbackConfig.Level = zap.NewAtomicLevelAt(zapLevelFromLogLevel(level))
+		logger, fallbackErr := fallbackConfig.Build(zap.AddCallerSkip(1))
+		if fallbackErr != nil {
+			// Last resort: use a no-op logger to prevent crashes
+			logger = zap.NewNop()
+		}
+		// Log the original error once we have a working logger
+		if logger != nil {
+			logger.Error("Failed to initialize logger with preferred config, using fallback",
+				zap.Error(err))
+		}
 	}
 
 	zapLogger := &ZapLogger{logger: logger}

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,13 @@ import (
 	"github.com/attaebra/hdhr-proxy/internal/logger"
 )
 
+// Build-time variables, set via -ldflags during build.
+var (
+	Version   = "dev"     // Set via -ldflags "-X main.Version=v1.0.0"
+	BuildTime = "unknown" // Set via -ldflags "-X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	GitCommit = "unknown" // Set via -ldflags "-X main.GitCommit=$(git rev-parse --short HEAD)"
+)
+
 func main() {
 	// Parse command line arguments.
 	hdhrIP := flag.String("hdhr-ip", "", "IP address of the HDHomeRun device")
@@ -24,7 +32,16 @@ func main() {
 	mediaPort := flag.Int("media-port", constants.DefaultMediaPort, "Port for the media server (MUST be 5004 for client compatibility)")
 	ffmpegPath := flag.String("ffmpeg", "/usr/bin/ffmpeg", "Path to the FFmpeg binary")
 	logLevel := flag.String("log-level", "info", "Logging level: error, warn, info, debug")
+	showVersion := flag.Bool("version", false, "Show version information and exit")
 	flag.Parse()
+
+	// Handle version flag
+	if *showVersion {
+		fmt.Printf("HDHR Proxy %s\n", Version)
+		fmt.Printf("Build time: %s\n", BuildTime)
+		fmt.Printf("Git commit: %s\n", GitCommit)
+		return
+	}
 
 	// Create configuration with defaults
 	cfg := config.DefaultConfig()
@@ -40,7 +57,9 @@ func main() {
 
 	// Create a beautiful startup banner
 	logger.Info("🎯 HDHR Proxy Starting",
-		logger.String("version", "v1.0.0"),
+		logger.String("version", Version),
+		logger.String("build_time", BuildTime),
+		logger.String("git_commit", GitCommit),
 		logger.String("log_level", cfg.LogLevel))
 
 	// Validate configuration

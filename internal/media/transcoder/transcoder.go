@@ -698,15 +698,32 @@ func (t *Impl) startFFmpeg(ctx context.Context, w http.ResponseWriter, r io.Read
 	t.mutex.Unlock()
 
 	// Set up a defer to kill the ffmpeg process if needed
+	var cleanupDone int32 // Atomic flag to prevent double cleanup
 	defer func() {
-		t.logger.Debug("🔫 Killing ffmpeg process", logger.Int("pid", ffmpegPid))
-		if err := cmd.Process.Kill(); err != nil {
-			t.logger.Error("❌ Failed to kill ffmpeg process", logger.ErrorField("error", err))
-		}
+		// Use atomic CAS to ensure cleanup only happens once
+		if atomic.CompareAndSwapInt32(&cleanupDone, 0, 1) {
+			t.logger.Debug("🔫 Cleaning up ffmpeg process", logger.Int("pid", ffmpegPid))
 
-		t.mutex.Lock()
-		delete(t.ffmpegProcesses, channel) // Changed to delete by channel
-		t.mutex.Unlock()
+			// Check if process is still alive before attempting to kill
+			if process := cmd.Process; process != nil {
+				// Try to get process state first
+				if processState := cmd.ProcessState; processState == nil || !processState.Exited() {
+					if err := process.Kill(); err != nil {
+						// Only log error if it's not "process already finished"
+						if !strings.Contains(err.Error(), "process already finished") &&
+							!strings.Contains(err.Error(), "no such process") {
+							t.logger.Error("❌ Failed to kill ffmpeg process", logger.ErrorField("error", err))
+						}
+					} else {
+						t.logger.Debug("✅ Successfully killed ffmpeg process", logger.Int("pid", ffmpegPid))
+					}
+				}
+			}
+
+			t.mutex.Lock()
+			delete(t.ffmpegProcesses, channel)
+			t.mutex.Unlock()
+		}
 	}()
 
 	// Create a scanner to read from stderr for debugging
@@ -919,13 +936,17 @@ func (t *Impl) StopActiveStream(channel string) {
 
 	// Look for any ffmpeg processes for this channel and stop them
 	if pid, exists := t.ffmpegProcesses[channel]; exists {
-		t.logger.Debug("🔫 Killing ffmpeg process",
+		t.logger.Debug("🔫 Stopping ffmpeg process",
 			logger.Int("pid", pid),
 			logger.String("channel", channel))
 		process, err := os.FindProcess(pid)
 		if err == nil {
 			if killErr := process.Kill(); killErr != nil {
-				t.logger.Error("❌ Error killing ffmpeg process", logger.ErrorField("error", killErr))
+				// Only log error if it's not "process already finished"
+				if !strings.Contains(killErr.Error(), "process already finished") &&
+					!strings.Contains(killErr.Error(), "no such process") {
+					t.logger.Error("❌ Error killing ffmpeg process", logger.ErrorField("error", killErr))
+				}
 			} else {
 				t.logger.Debug("✅ Successfully killed ffmpeg process", logger.Int("pid", pid))
 			}

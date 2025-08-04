@@ -14,16 +14,4 @@ const (
 const (
 	// ContentTypeJSON is the MIME type for JSON responses.
 	ContentTypeJSON = "application/json"
-
-	// ContentTypeStream is the MIME type for MPEG-TS streams.
-	ContentTypeStream = "video/MP2T"
-)
-
-// Connection timeouts.
-const (
-	// DefaultBufferSize is the standard buffer size for streaming operations.
-	DefaultBufferSize = 256 * 1024 // 256KB
-
-	// DefaultInactivityTimeout is the default timeout for inactive connections.
-	DefaultInactivityTimeout = 2 * 60 * 1000 // 2 minutes in milliseconds
 )

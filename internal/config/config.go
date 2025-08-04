@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/attaebra/hdhr-proxy/internal/constants"
@@ -116,6 +117,27 @@ func (c *Config) Validate() error {
 
 	if c.FFmpegPath == "" {
 		return fmt.Errorf("FFmpeg path is required")
+	}
+
+	// Validate FFmpeg executable exists and is executable
+	if err := validateFFmpegExecutable(c.FFmpegPath); err != nil {
+		return fmt.Errorf("FFmpeg validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// validateFFmpegExecutable checks if the FFmpeg executable exists and is usable.
+func validateFFmpegExecutable(path string) error {
+	// Check if file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("FFmpeg executable not found at path: %s", path)
+	}
+
+	// Try to execute FFmpeg with version flag to verify it's working
+	cmd := exec.Command(path, "-version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("FFmpeg executable at %s is not working or not FFmpeg: %w", path, err)
 	}
 
 	return nil

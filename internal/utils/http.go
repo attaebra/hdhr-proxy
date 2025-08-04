@@ -52,12 +52,6 @@ func HTTPClient(timeout time.Duration) interfaces.Client {
 	return &ClientWrapper{Client: client}
 }
 
-// HTTPClientWithTimeout creates a client with custom timeout using the same transport.
-func HTTPClientWithTimeout(timeout time.Duration) interfaces.Client {
-	// Use the same transport configuration as HTTPClient
-	return HTTPClient(timeout)
-}
-
 // BuildAPIURL constructs a URL for API endpoints with the appropriate port.
 func BuildAPIURL(host, path string) string {
 	// Ensure path starts with a slash
