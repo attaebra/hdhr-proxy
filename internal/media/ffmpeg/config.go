@@ -12,9 +12,11 @@ type Config struct {
 	VideoCodec string
 
 	// Audio settings
-	AudioCodec    string
-	AudioBitrate  string
-	AudioChannels string
+	AudioCodec      string
+	AudioProfile    string
+	AudioBitrate    string
+	AudioChannels   string
+	AudioSampleRate string
 
 	// Buffer and streaming settings
 	BufferSize         string
@@ -26,6 +28,12 @@ type Config struct {
 	Threads            string
 	Format             string
 
+	// Input analysis settings (anti-stuttering)
+	AnalyzeDuration string
+	ProbeSize       string
+	FPSProbeSize    string
+	FPSMode         string
+
 	// Error resilience settings
 	ErrorDetection   string
 	SkipFrame        string
@@ -36,23 +44,32 @@ type Config struct {
 // Ensure Config implements the Config interface.
 var _ interfaces.Config = (*Config)(nil)
 
-// New returns a configuration for AC4 streaming with error resilience.
+// New returns a configuration for AC4 streaming with error resilience and anti-stuttering improvements.
 func New() *Config {
 	return &Config{
-		InputSource:        "pipe:0",
-		OutputTarget:       "pipe:1",
-		VideoCodec:         "copy",
-		AudioCodec:         "eac3",
-		AudioBitrate:       "384k",
-		AudioChannels:      "2",
-		BufferSize:         "2048k",
+		InputSource:     "pipe:0",
+		OutputTarget:    "pipe:1",
+		VideoCodec:      "copy",
+		AudioCodec:      "eac3",
+		AudioBitrate:    "384k",
+		AudioChannels:   "2",
+		AudioSampleRate: "48000", // Fixed sample rate for audio stability
+
+		// Anti-stuttering buffer improvements
+		BufferSize:         "4096k", // Doubled from 2048k for better buffering
 		MaxRate:            "30M",
 		Preset:             "superfast",
 		Tune:               "zerolatency",
-		ThreadQueueSize:    "512",
-		MaxMuxingQueueSize: "256",
-		Threads:            "4",
+		ThreadQueueSize:    "2048", // Quadrupled from 512 for AC4 streams
+		MaxMuxingQueueSize: "512",  // Doubled from 256 for throughput
+		Threads:            "8",    // Increased from 4 for better CPU utilization
 		Format:             "mpegts",
+
+		// Input analysis for faster startup (anti-stuttering)
+		AnalyzeDuration: "1000000", // 1 second limit for faster AC4 analysis
+		ProbeSize:       "1000000", // 1MB limit to prevent analysis hanging
+		FPSProbeSize:    "1",       // Immediate frame rate detection
+		FPSMode:         "cfr",     // Constant frame rate for A/V sync
 
 		// Error resilience for AC4 streams
 		ErrorDetection:   "ignore_err",   // Ignore decoding errors instead of crashing
@@ -77,15 +94,33 @@ func (c *Config) SetAudioBitrate(bitrate string) {
 	c.AudioBitrate = bitrate
 }
 
+// SetAudioProfile sets the audio profile.
+func (c *Config) SetAudioProfile(profile string) {
+	c.AudioProfile = profile
+}
+
 // SetAudioChannels sets the number of audio channels.
 func (c *Config) SetAudioChannels(channels string) {
 	c.AudioChannels = channels
 }
 
-// BuildArgs constructs command line arguments for FFmpeg.
+// BuildArgs constructs command line arguments for FFmpeg with anti-stuttering improvements.
 func (c *Config) BuildArgs() []string {
-	args := []string{
-		// Input flags for error resilience
+	args := []string{}
+
+	// Input analysis flags for faster startup (anti-stuttering)
+	if c.AnalyzeDuration != "" {
+		args = append(args, "-analyzeduration", c.AnalyzeDuration)
+	}
+	if c.ProbeSize != "" {
+		args = append(args, "-probesize", c.ProbeSize)
+	}
+	if c.FPSProbeSize != "" {
+		args = append(args, "-fpsprobesize", c.FPSProbeSize)
+	}
+
+	// Input flags for error resilience
+	args = append(args,
 		"-fflags", "+flush_packets+genpts+discardcorrupt", // Generate PTS, discard corrupted packets
 		"-flush_packets", "1", // Enable packet flushing
 		"-max_delay", "0", // Minimize delay for live streaming
@@ -105,9 +140,28 @@ func (c *Config) BuildArgs() []string {
 		"-c:a", c.AudioCodec,
 		"-b:a", c.AudioBitrate,
 		"-ac", c.AudioChannels,
-		"-avoid_negative_ts", "make_zero", // Handle timestamp issues
+	)
 
-		// Performance settings
+	// Add audio profile if specified
+	if c.AudioProfile != "" {
+		args = append(args, "-profile:a", c.AudioProfile)
+	}
+
+	// Add audio sample rate for stability
+	if c.AudioSampleRate != "" {
+		args = append(args, "-ar", c.AudioSampleRate)
+	}
+
+	// Timestamp handling
+	args = append(args, "-avoid_negative_ts", "make_zero")
+
+	// Add frame rate mode for A/V sync (anti-stuttering)
+	if c.FPSMode != "" {
+		args = append(args, "-fps_mode", c.FPSMode)
+	}
+
+	// Performance settings
+	args = append(args,
 		"-bufsize", c.BufferSize,
 		"-maxrate", c.MaxRate,
 		"-preset", c.Preset,
@@ -118,7 +172,7 @@ func (c *Config) BuildArgs() []string {
 		// Output format
 		"-f", c.Format,
 		c.OutputTarget,
-	}
+	)
 
 	// Note: ReconnectOptions are reserved for future network input enhancement
 	// Currently using pipes, so no additional reconnection flags needed

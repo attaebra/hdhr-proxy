@@ -9,7 +9,7 @@ func TestNew(t *testing.T) {
 	// Test that New returns a valid configuration
 	config := New()
 
-	// Verify all the expected fields are set correctly
+	// Verify all the expected fields are set correctly (anti-stuttering values)
 	expectedFields := map[string]string{
 		"InputSource":        "pipe:0",
 		"OutputTarget":       "pipe:1",
@@ -17,14 +17,19 @@ func TestNew(t *testing.T) {
 		"AudioCodec":         "eac3",
 		"AudioBitrate":       "384k",
 		"AudioChannels":      "2",
-		"BufferSize":         "2048k",
+		"AudioSampleRate":    "48000",
+		"BufferSize":         "4096k", // Doubled for anti-stuttering
 		"MaxRate":            "30M",
 		"Preset":             "superfast",
 		"Tune":               "zerolatency",
-		"ThreadQueueSize":    "512",
-		"MaxMuxingQueueSize": "256",
-		"Threads":            "4",
+		"ThreadQueueSize":    "2048", // Quadrupled for anti-stuttering
+		"MaxMuxingQueueSize": "512",  // Doubled for anti-stuttering
+		"Threads":            "8",    // Increased for better performance
 		"Format":             "mpegts",
+		"AnalyzeDuration":    "1000000", // Anti-stuttering input analysis
+		"ProbeSize":          "1000000", // Anti-stuttering input analysis
+		"FPSProbeSize":       "1",       // Anti-stuttering input analysis
+		"FPSMode":            "cfr",     // Anti-stuttering A/V sync
 	}
 
 	// Check each field
@@ -50,6 +55,10 @@ func TestNew(t *testing.T) {
 
 	if config.AudioChannels != expectedFields["AudioChannels"] {
 		t.Errorf("Expected AudioChannels to be %s, got %s", expectedFields["AudioChannels"], config.AudioChannels)
+	}
+
+	if config.AudioSampleRate != expectedFields["AudioSampleRate"] {
+		t.Errorf("Expected AudioSampleRate to be %s, got %s", expectedFields["AudioSampleRate"], config.AudioSampleRate)
 	}
 
 	if config.BufferSize != expectedFields["BufferSize"] {
@@ -83,6 +92,23 @@ func TestNew(t *testing.T) {
 	if config.Format != expectedFields["Format"] {
 		t.Errorf("Expected Format to be %s, got %s", expectedFields["Format"], config.Format)
 	}
+
+	// Check anti-stuttering fields
+	if config.AnalyzeDuration != expectedFields["AnalyzeDuration"] {
+		t.Errorf("Expected AnalyzeDuration to be %s, got %s", expectedFields["AnalyzeDuration"], config.AnalyzeDuration)
+	}
+
+	if config.ProbeSize != expectedFields["ProbeSize"] {
+		t.Errorf("Expected ProbeSize to be %s, got %s", expectedFields["ProbeSize"], config.ProbeSize)
+	}
+
+	if config.FPSProbeSize != expectedFields["FPSProbeSize"] {
+		t.Errorf("Expected FPSProbeSize to be %s, got %s", expectedFields["FPSProbeSize"], config.FPSProbeSize)
+	}
+
+	if config.FPSMode != expectedFields["FPSMode"] {
+		t.Errorf("Expected FPSMode to be %s, got %s", expectedFields["FPSMode"], config.FPSMode)
+	}
 }
 
 func TestBuildArgs(t *testing.T) {
@@ -100,23 +126,28 @@ func TestBuildArgs(t *testing.T) {
 		}
 	}
 
-	// Test essential flags are present
+	// Test essential flags are present (anti-stuttering values)
 	essentialFlags := map[string]string{
 		"-i":                     "pipe:0",
 		"-c:v":                   "copy",
 		"-c:a":                   "eac3",
 		"-b:a":                   "384k",
 		"-ac":                    "2",
-		"-bufsize":               "2048k",
+		"-ar":                    "48000", // Anti-stuttering: audio sample rate
+		"-bufsize":               "4096k", // Anti-stuttering: doubled buffer
 		"-maxrate":               "30M",
 		"-preset":                "superfast",
 		"-tune":                  "zerolatency",
-		"-max_muxing_queue_size": "256",
-		"-threads":               "4",
+		"-max_muxing_queue_size": "512", // Anti-stuttering: doubled
+		"-threads":               "8",   // Anti-stuttering: increased
 		"-f":                     "mpegts",
-		"-thread_queue_size":     "512",
+		"-thread_queue_size":     "2048", // Anti-stuttering: quadrupled
 		"-flush_packets":         "1",
 		"-max_delay":             "0",
+		"-analyzeduration":       "1000000", // Anti-stuttering: input analysis
+		"-probesize":             "1000000", // Anti-stuttering: input analysis
+		"-fpsprobesize":          "1",       // Anti-stuttering: input analysis
+		"-fps_mode":              "cfr",     // Anti-stuttering: A/V sync
 		"-err_detect":            "ignore_err",
 		"-strict":                "experimental",
 		"-skip_frame":            "nokey",
