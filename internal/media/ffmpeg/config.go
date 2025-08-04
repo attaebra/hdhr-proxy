@@ -62,7 +62,7 @@ func New() *Config {
 		Tune:               "zerolatency",
 		ThreadQueueSize:    "2048", // Quadrupled from 512 for AC4 streams
 		MaxMuxingQueueSize: "512",  // Doubled from 256 for throughput
-		Threads:            "8",    // Increased from 4 for better CPU utilization
+		Threads:            "2",    // Conservative for shared server (4 streams × 2 = 8 threads max)
 		Format:             "mpegts",
 
 		// Input analysis for faster startup (anti-stuttering)

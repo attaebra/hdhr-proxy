@@ -24,7 +24,7 @@ func TestNew(t *testing.T) {
 		"Tune":               "zerolatency",
 		"ThreadQueueSize":    "2048", // Quadrupled for anti-stuttering
 		"MaxMuxingQueueSize": "512",  // Doubled for anti-stuttering
-		"Threads":            "8",    // Increased for better performance
+		"Threads":            "2",    // Conservative for shared server
 		"Format":             "mpegts",
 		"AnalyzeDuration":    "1000000", // Anti-stuttering input analysis
 		"ProbeSize":          "1000000", // Anti-stuttering input analysis
@@ -139,7 +139,7 @@ func TestBuildArgs(t *testing.T) {
 		"-preset":                "superfast",
 		"-tune":                  "zerolatency",
 		"-max_muxing_queue_size": "512", // Anti-stuttering: doubled
-		"-threads":               "8",   // Anti-stuttering: increased
+		"-threads":               "2",   // Conservative for shared server
 		"-f":                     "mpegts",
 		"-thread_queue_size":     "2048", // Anti-stuttering: quadrupled
 		"-flush_packets":         "1",
